@@ -1,0 +1,23 @@
+name: Daily Analysis
+on:
+  workflow_dispatch:  # 允许你手动在页面点击运行
+  schedule:
+    - cron: '30 18 * * *' # 每天北京时间18:30自动运行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: pip install requests akshare
+      - name: Run script
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          PUSH_KEY: ${{ secrets.PUSH_KEY }}
+        run: |
+          python main.py

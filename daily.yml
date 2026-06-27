@@ -1,0 +1,25 @@
+name: Daily Analysis
+on:
+  workflow_dispatch:  # 允许你手动在 GitHub 页面点击运行
+  schedule:
+    - cron: '45 1 * * *'  # 对应北京时间 09:45
+    - cron: '0 10 * * *'  # 对应北京时间 18:00
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: |
+          pip install requests akshare pandas google-generativeai
+      - name: Run script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PUSH_KEY: ${{ secrets.PUSH_KEY }}
+        run: |
+          python main.py

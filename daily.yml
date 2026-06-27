@@ -1,0 +1,24 @@
+name: Daily Analysis
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '45 1 * * *' # 北京时间09:45
+    - cron: '0 10 * * *' # 北京时间18:00
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: pip install requests akshare pandas google-generativeai
+      - name: Run script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: |
+          python main.py

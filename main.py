@@ -1,121 +1,41 @@
+import akshare as ak
 import os
 import requests
-import feedparser
-import akshare as ak
-import json
+import google.generativeai as genai
 
-# GitHub Secrets 中需要配置 LLM_API_KEY 和 PUSH_KEY
-GEMINI_API_KEY = os.environ.get("LLM_API_KEY")
-PUSH_KEY = os.environ.get("PUSH_KEY")
-RSS_URL = "https://rsshub.app/twitter/user/sszcw" # 这里替换为你监控的 RSS 源
+# 配置 Gemini
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-def run_system():
-    # 1. 抓取舆情
-    feed = feedparser.parse(RSS_URL)
-    content = "\n".join([f"{e.title}: {e.description}" for e in feed.entries[:5]])
-    
-    # 2. 调用 Gemini 分析
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    prompt = f"分析以下内容，提取其中的A股代码(6位数字)。返回 JSON: {{\"stocks\": [\"600519\"]}}。内容: {content}"
-    resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
-    
+def get_ai_watchlist():
     try:
-        text = resp.json()['candidates'][0]['content']['parts'][0]['text']
-        start, end = text.find('{'), text.rfind('}') + 1
-        stocks = json.loads(text[start:end])['stocks']
+        # 获取热点和活跃个股
+        df_hot = ak.stock_hot_rank_em()
+        df_spot = ak.stock_zh_a_spot_em()
+        candidates = df_spot[(df_spot['成交额'] > 500000000) & (df_spot['涨跌幅'] > 2) & (df_spot['涨跌幅'] < 7)]
         
-        # 3. 量化筛选涨幅
-        report = "### 📈 舆情精选潜力股\n"
-        for s in stocks:
-            df = ak.stock_zh_a_spot_em()
-            stock = df[df['代码'] == s]
-            status = f"涨幅: {stock['涨跌幅'].values[0]}%" if not stock.empty else "未查到"
-            report += f"- {s}: {status}\n"
-            
-        # 4. 推送到微信
-        requests.post(f"https://sctapi.ftqq.com/{PUSH_KEY}.send", data={"title": "投研信号", "desp": report})
+        prompt = f"""
+        你是一名专业量化分析师。请结合市场热点板块和活跃股票，选出3只最具成长潜力的股票。
+        热点板块: \n{df_hot.head(10).to_string()}
+        活跃个股池: \n{candidates.head(20).to_string()}
+        
+        请只返回格式: "代码1 名称1, 代码2 名称2, 代码3 名称3"
+        """
+        res = model.generate_content(prompt)
+        return res.text.strip()
     except Exception as e:
-        print(f"执行出错: {e}")
+        return f"Error in screening: {str(e)}"
+
+def push_to_wechat(content):
+    url = f"https://sctapi.ftqq.com/{os.getenv('SENDKEY')}.send"
+    requests.post(url, data={"title": "今日 AI 选股与热点分析", "desp": content})
 
 if __name__ == "__main__":
-    run_system()import os
-import requests
-import feedparser
-import akshare as ak
-import json
-
-# GitHub Secrets 中需要配置 LLM_API_KEY 和 PUSH_KEY
-GEMINI_API_KEY = os.environ.get("LLM_API_KEY")
-PUSH_KEY = os.environ.get("PUSH_KEY")
-RSS_URL = "https://rsshub.app/twitter/user/sszcw" # 这里替换为你监控的 RSS 源
-
-def run_system():
-    # 1. 抓取舆情
-    feed = feedparser.parse(RSS_URL)
-    content = "\n".join([f"{e.title}: {e.description}" for e in feed.entries[:5]])
-    
-    # 2. 调用 Gemini 分析
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    prompt = f"分析以下内容，提取其中的A股代码(6位数字)。返回 JSON: {{\"stocks\": [\"600519\"]}}。内容: {content}"
-    resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
-    
-    try:
-        text = resp.json()['candidates'][0]['content']['parts'][0]['text']
-        start, end = text.find('{'), text.rfind('}') + 1
-        stocks = json.loads(text[start:end])['stocks']
-        
-        # 3. 量化筛选涨幅
-        report = "### 📈 舆情精选潜力股\n"
-        for s in stocks:
-            df = ak.stock_zh_a_spot_em()
-            stock = df[df['代码'] == s]
-            status = f"涨幅: {stock['涨跌幅'].values[0]}%" if not stock.empty else "未查到"
-            report += f"- {s}: {status}\n"
-            
-        # 4. 推送到微信
-        requests.post(f"https://sctapi.ftqq.com/{PUSH_KEY}.send", data={"title": "投研信号", "desp": report})
-    except Exception as e:
-        print(f"执行出错: {e}")
-
-if __name__ == "__main__":
-    run_system()import os
-import requests
-import feedparser
-import akshare as ak
-import json
-
-# GitHub Secrets 中需要配置 LLM_API_KEY 和 PUSH_KEY
-GEMINI_API_KEY = os.environ.get("LLM_API_KEY")
-PUSH_KEY = os.environ.get("PUSH_KEY")
-RSS_URL = "https://rsshub.app/twitter/user/sszcw" # 这里替换为你监控的 RSS 源
-
-def run_system():
-    # 1. 抓取舆情
-    feed = feedparser.parse(RSS_URL)
-    content = "\n".join([f"{e.title}: {e.description}" for e in feed.entries[:5]])
-    
-    # 2. 调用 Gemini 分析
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    prompt = f"分析以下内容，提取其中的A股代码(6位数字)。返回 JSON: {{\"stocks\": [\"600519\"]}}。内容: {content}"
-    resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
-    
-    try:
-        text = resp.json()['candidates'][0]['content']['parts'][0]['text']
-        start, end = text.find('{'), text.rfind('}') + 1
-        stocks = json.loads(text[start:end])['stocks']
-        
-        # 3. 量化筛选涨幅
-        report = "### 📈 舆情精选潜力股\n"
-        for s in stocks:
-            df = ak.stock_zh_a_spot_em()
-            stock = df[df['代码'] == s]
-            status = f"涨幅: {stock['涨跌幅'].values[0]}%" if not stock.empty else "未查到"
-            report += f"- {s}: {status}\n"
-            
-        # 4. 推送到微信
-        requests.post(f"https://sctapi.ftqq.com/{PUSH_KEY}.send", data={"title": "投研信号", "desp": report})
-    except Exception as e:
-        print(f"执行出错: {e}")
-
-if __name__ == "__main__":
-    run_system()
+    codes = get_ai_watchlist()
+    analysis_prompt = f"""
+    针对这些股票: {codes}。
+    请结合近期A股题材逻辑，分析它们的上涨逻辑、催化剂及核心风险。
+    请输出一份详细的Markdown格式研报。
+    """
+    report = model.generate_content(analysis_prompt).text
+    push_to_wechat(report)

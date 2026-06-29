@@ -1,0 +1,24 @@
+name: A-Stock Screener
+on:
+  workflow_dispatch:
+  schedule:
+    # 每天 14:30 (北京时间) = 06:30 (UTC)
+    - cron: '30 6 * * *'
+    # 每天 15:30 (北京时间) = 07:30 (UTC)
+    - cron: '30 7 * * *'
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: pip install akshare pandas requests
+      - name: Run Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python main.py

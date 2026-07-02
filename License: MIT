@@ -1,0 +1,8 @@
+### **2. requirements.txt**
+
+```txt
+akshare>=1.0
+pandas
+requests
+baostock
+tqdm

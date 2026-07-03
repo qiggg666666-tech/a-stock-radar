@@ -1,0 +1,6 @@
+akshare>=1.0
+pandas
+requests
+baostock
+tqdm
+serverchan-sdk

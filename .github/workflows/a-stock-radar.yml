@@ -1,0 +1,84 @@
+name: A-Stock Radar
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 8 * * *'   # 主策略：三线共振/周线宽松
+    - cron: '40 8 * * *'   # 强势股延续（保守版）
+    - cron: '50 8 * * *'   # 板块优选+信号流水线
+
+jobs:
+  main-screener:
+    runs-on: ubuntu-latest
+    # 定时触发时，只有对应时间点触发的那个job才跑；手动触发时全部job都跑
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 8 * * *'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Main Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python main.py
+
+  strong-continuation:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '40 8 * * *'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Strong Continuation Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python strong_continuation.py
+
+  sector-pipeline:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '50 8 * * *'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Sector Pipeline
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python pipeline_sector_plus_signal.py
+
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # 关键：回测耗时很长，只有手动触发(workflow_dispatch)才跑，定时调度(schedule)一律跳过
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Backtest
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python backtest.py

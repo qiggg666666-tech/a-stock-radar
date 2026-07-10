@@ -1,0 +1,178 @@
+name: A-Stock Radar
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 8 * * *'   # 主策略：三线共振/周线宽松
+    - cron: '40 8 * * *'   # 强势股延续（保守版）
+    - cron: '50 8 * * *'   # 板块优选+信号流水线
+    - cron: '00 9 * * *'   # PE/PB估值筛选
+    - cron: '10 9 * * *'   # 520天首红信号
+    - cron: '20 9 * * *'   # 每日大盘信号
+    - cron: '0 3 1 * *'    # 每月1号，重算校准表
+
+jobs:
+  main-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 8 * * *'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Main Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python main.py
+
+  strong-continuation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '40 8 * * *'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Strong Continuation Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python strong_continuation.py
+
+  sector-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '50 8 * * *'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Sector Pipeline
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python pipeline_sector_plus_signal.py
+
+  valuation-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '00 9 * * *'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Valuation Screener (PE/PB)
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python valuation_screen.py
+
+  first-red-520-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '10 9 * * *'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run 520-Day First Red Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python first_red_520.py
+
+  daily-market-signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '20 9 * * *'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Daily Market Signal
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python daily_market_signal.py
+
+  build-calibration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 3 1 * *'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Build Calibration
+        run: python build_calibration.py
+      - name: Commit calibration_table.csv
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add calibration_table.csv
+          git diff --staged --quiet || git commit -m "自动更新: 大盘信号校准表 $(date +'%Y-%m-%d')"
+          git push
+
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Backtest
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python backtest.py
+      - name: Run Breakout Calmar Backtest
+        run: python breakout_calmar_backtest.py
+      - name: Run First-Red-520 Backtest
+        run: python first_red_520_backtest.py
+      - name: Run CAGR Check
+        run: python check_cagr.py

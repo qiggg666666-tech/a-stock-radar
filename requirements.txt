@@ -1,0 +1,10 @@
+akshare>=1.0
+pandas>=2.2,<4.0
+requests
+baostock
+tqdm
+serverchan-sdk
+scipy
+scikit-learn
+numpy
+matplotlib

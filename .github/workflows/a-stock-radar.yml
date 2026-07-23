@@ -1,0 +1,32 @@
+# ===================== zt-pre-screener (新增: 提前找涨停=候选池+回看; 不覆盖 quant-signal-bot) =====================
+  zt-pre-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '50 0 * * 1-5'   # UTC 0:50 = 北京 8:50 工作日盘前; 想纯手动可删整行 schedule 对应条件
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Install Chinese font (for chart rendering)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-wqy-zenhei
+      - name: Run ZT Pre Screener (涨停候选池)
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+          # MODE: candidate   # 默认即 candidate; 切勿在 Actions 设 intraday(会卡到 timeout 红叉)
+        run: python zt_pre_screener.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zt-pre-screener-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn

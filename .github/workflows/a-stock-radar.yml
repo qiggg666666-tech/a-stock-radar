@@ -1,0 +1,751 @@
+name: A-Stock Radar
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 8 * * *'    # 主策略：三线共振/周线宽松
+    - cron: '40 8 * * *'    # 强势股延续（保守版）
+    - cron: '50 8 * * *'    # 板块优选+信号流水线
+    - cron: '00 9 * * *'    # PE/PB估值筛选
+    - cron: '10 9 * * *'    # 520天首红信号
+    - cron: '20 9 * * *'    # 每日大盘信号(校准链)
+    - cron: '30 9 * * *'    # MA5横盘筛选
+    - cron: '40 9 * * *'    # 520日线低位综合筛选
+    - cron: '50 9 * * *'    # 板块动量+估值分位
+    - cron: '0 8 * * *'     # 资金异动监控（收盘后）
+    - cron: '0 8 * * 5'     # 外资/中央结算持股监控（每周五收盘后）
+    - cron: '10 8 * * *'    # 板块轮动预警（收盘后）
+    - cron: '20 8 * * *'    # 指数MACD背离监控（收盘后）
+    - cron: '30 8 * * *'    # 指数支撑阻力位（收盘后）(与主策略同cron, 原设计)
+    - cron: '35 8 * * 1-5'  # 收盘后超跌首板（工作日收盘后）
+    - cron: '45 8 * * 1-5'  # COX全板块选股(超卖反弹)（工作日收盘后）
+    - cron: '55 8 * * *'    # MTF共振选股(趋势起涨)
+    - cron: '50 0 * * 1-5'  # 提前找涨停-候选池（北京8:50盘前, 工作日）
+    - cron: '5 9 * * 1-5'   # 多周期MACD+RSI+背离共振（北京17:05收盘后, 工作日）
+    - cron: '15 9 * * 1-5'  # 520首红×多周期共振结合（北京17:15收盘后, 工作日）
+    - cron: '25 9 * * 1-5'  # 520首红×板块结合（北京17:25收盘后, 工作日）
+    - cron: '35 9 * * 1-5'  # 上升趋势回调低点买入（北京17:35收盘后, 工作日）
+    - cron: '20 2 * * 1-5'  # 杜邦ROE多因子（北京10:20, 工作日）
+    - cron: '25 8 * * 1-5'  # ★新增 指数支撑+量比择时信号（北京16:25收盘后, 工作日）
+    - cron: '0 3 1 * *'     # 每月1号，重算校准表
+
+jobs:
+  main-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 8 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Main Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python main.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-screener-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  strong-continuation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '40 8 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Strong Continuation Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python strong_continuation.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strong-continuation-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  sector-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '50 8 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Sector Pipeline
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python pipeline_sector_plus_signal.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sector-pipeline-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  valuation-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '00 9 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Valuation Screener (PE/PB)
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python valuation_screen.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: valuation-screen-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  first-red-520-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '10 9 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run 520-Day First Red Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python first_red_520.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: first-red-520-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  daily-market-signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '20 9 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Daily Market Signal
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python daily_market_signal.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-market-signal-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  ma5-sideways-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 9 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run MA5 Sideways Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python ma5_sideways.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ma5-sideways-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  ma520-bottom-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '40 9 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run MA520 Bottom Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python ma520_bottom_screener.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ma520-bottom-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  sector-momentum-valuation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '50 9 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Sector Momentum + Valuation Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python sector_momentum_valuation.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sector-momentum-valuation-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  market-fund-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 8 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Market Fund Alert
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python market_fund_alert.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-fund-alert-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  foreign-holder-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 8 * * 5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Foreign Holder Monitor
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python foreign_holder_monitor.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foreign-holder-results
+          path: output/
+          retention-days: 90
+          if-no-files-found: warn
+
+  sector-rotation-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '10 8 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Sector Rotation Alert
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python sector_rotation_alert.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sector-rotation-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  index-divergence-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '20 8 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Index Divergence Alert
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python index_divergence_alert.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-divergence-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  index-support-resistance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 8 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Index Support Resistance
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python index_support_resistance.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-support-resistance-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  index-support-signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '25 8 * * 1-5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Index Support Signal
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+        run: python index_support_signal.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-support-signal-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  quant-signal-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '35 8 * * 1-5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Install Chinese font (for chart rendering)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-wqy-zenhei
+      - name: Run Quant Signal Bot
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+        run: python quant_signal_bot.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quant-signal-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  zt-pre-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '50 0 * * 1-5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Install Chinese font (for chart rendering)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-wqy-zenhei
+      - name: Run ZT Pre Screener (涨停候选池)
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+        run: python zt_pre_screener.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zt-pre-screener-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  macd-resonance-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '5 9 * * 1-5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run MACD Resonance Screener
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+        run: python macd_resonance_screener.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macd-resonance-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  first-red-macd-combo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '15 9 * * 1-5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run First-Red x MACD Combo
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+          SCAN_LIMIT: '0'
+        run: python first_red_macd_combo.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: first-red-macd-combo-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  first-red-sector-combo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '25 9 * * 1-5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run First-Red x Sector Combo
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+          SCAN_LIMIT: '0'
+        run: python first_red_sector_combo.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: first-red-sector-combo-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  dip-buy-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '35 9 * * 1-5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Dip Buy Screener
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+          SCAN_LIMIT: '0'
+        run: python dip_buy_screener.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dip-buy-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  dupont-roe-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '20 2 * * 1-5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Dupont ROE Screener
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+          SCAN_LIMIT: '0'
+        run: python dupont_roe_screener.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dupont-roe-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  cox-sector-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '45 8 * * 1-5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run COX Sector Bot (全板块选股)
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+          MAX_CANDIDATES: '600'
+        run: python cox_sector_bot.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cox-sector-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  mtf-resonance-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '55 8 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run MTF Resonance Screener
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python mtf_resonance_screener.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtf-resonance-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  build-calibration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 3 1 * *'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Build Calibration
+        run: python build_calibration.py
+      - name: Commit calibration_table.csv
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add calibration_table.csv
+          git diff --staged --quiet || git commit -m "自动更新: 大盘信号校准表 $(date +'%Y-%m-%d')"
+          git push
+      - name: Upload calibration detail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-detail
+          path: output/
+          retention-days: 90
+          if-no-files-found: warn
+
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Backtest
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python backtest.py
+      - name: Run Breakout Calmar Backtest
+        run: python breakout_calmar_backtest.py
+      - name: Run First-Red-520 Backtest
+        run: python first_red_520_backtest.py
+      - name: Run CAGR Check
+        run: python check_cagr.py

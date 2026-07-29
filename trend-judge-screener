@@ -1,0 +1,28 @@
+trend-judge-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '20 4 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Trend Judge Screener
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SENDKEY }}
+          SCAN_LIMIT: '3500'
+          SCORE_MIN: '55'
+        run: python trend_judge_screener.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trend-judge-results
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn

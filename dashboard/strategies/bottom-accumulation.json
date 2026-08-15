@@ -6,22 +6,357 @@
     "score_label": "综合评分"
   },
   "run_date": "2026-08-15",
-  "generated_at": "2026-08-15T20:59:38+08:00",
+  "generated_at": "2026-08-15T23:45:19+08:00",
   "status": "ready",
-  "candidate_count": 0,
+  "candidate_count": 55,
   "shards": [
     "A",
     "B",
     "C",
-    "D"
+    "D",
+    "E"
   ],
+  "missing_shards": [],
+  "failed_shards": [],
   "source_files": [
     "bottom_accumulation_fast_a.csv",
     "bottom_accumulation_fast_b.csv",
     "bottom_accumulation_fast_c.csv",
-    "bottom_accumulation_fast_d.csv"
+    "bottom_accumulation_fast_d.csv",
+    "bottom_accumulation_fast_e.csv"
   ],
   "read_errors": [],
-  "candidates": [],
+  "candidates": [
+    {
+      "code": "300627",
+      "name": "华测导航",
+      "score": 76.9,
+      "tag": "🟡低位横盘",
+      "extras": {
+        "最新价": 28.74,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "600168",
+      "name": "武汉控股",
+      "score": 72.1,
+      "tag": "🟡低位横盘",
+      "extras": {
+        "最新价": 4.38,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "603969",
+      "name": "银龙股份",
+      "score": 66.6,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 7.26,
+        "MACD状态": "金叉",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "000063",
+      "name": "中兴通讯",
+      "score": 61.9,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 35.05,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "000768",
+      "name": "中航西飞",
+      "score": 61.8,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 21.43,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "300247",
+      "name": "融捷健康",
+      "score": 61.3,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 3.87,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "300388",
+      "name": "节能国祯",
+      "score": 56.1,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 6.98,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "600363",
+      "name": "联创光电",
+      "score": 53.1,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 20.36,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "002019",
+      "name": "亿帆医药",
+      "score": 51.0,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 10.61,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "603501",
+      "name": "豪威集团",
+      "score": 49.8,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 91.08,
+        "MACD状态": "金叉",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "002261",
+      "name": "拓维信息",
+      "score": 49.3,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 26.44,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "600839",
+      "name": "四川长虹",
+      "score": 48.9,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 7.28,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "600435",
+      "name": "北方导航",
+      "score": 48.8,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 10.8,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "002843",
+      "name": "泰嘉股份",
+      "score": 47.3,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 16.35,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "688772",
+      "name": "珠海冠宇",
+      "score": 47.0,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 14.88,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "688036",
+      "name": "传音控股",
+      "score": 45.2,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 55.02,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "600081",
+      "name": "东风科技",
+      "score": 43.2,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 10.21,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "688550",
+      "name": "瑞联新材",
+      "score": 42.2,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 40.05,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "600873",
+      "name": "梅花生物",
+      "score": 40.6,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 7.95,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "300327",
+      "name": "中颖电子",
+      "score": 40.5,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 23.12,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "603683",
+      "name": "晶华新材",
+      "score": 40.3,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 15.62,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "601890",
+      "name": "亚星锚链",
+      "score": 40.2,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 9.18,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "301618",
+      "name": "长联科技",
+      "score": 39.3,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 33.4,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "300435",
+      "name": "中泰股份",
+      "score": 38.8,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 17.2,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "603312",
+      "name": "西典新能",
+      "score": 37.2,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 33.38,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "300019",
+      "name": "硅宝科技",
+      "score": 37.0,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 15.16,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "301516",
+      "name": "中远通",
+      "score": 36.8,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 16.1,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "603207",
+      "name": "小方制药",
+      "score": 36.2,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 24.0,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "300856",
+      "name": "科思股份",
+      "score": 35.7,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 11.52,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    },
+    {
+      "code": "301608",
+      "name": "博实结",
+      "score": 33.4,
+      "tag": "🟠低位止跌",
+      "extras": {
+        "最新价": 47.82,
+        "MACD状态": "转强",
+        "数据源": "baostock"
+      }
+    }
+  ],
   "disclaimer": "仅展示自动化筛选产物及其生成时点，不构成投资建议。"
 }

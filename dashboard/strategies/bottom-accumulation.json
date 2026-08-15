@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "strategy": {
+    "key": "bottom-accumulation",
+    "label": "底部吸筹快速版",
+    "score_label": "综合评分"
+  },
+  "run_date": "2026-08-15",
+  "generated_at": "2026-08-15T20:59:38+08:00",
+  "status": "ready",
+  "candidate_count": 0,
+  "shards": [
+    "A",
+    "B",
+    "C",
+    "D"
+  ],
+  "source_files": [
+    "bottom_accumulation_fast_a.csv",
+    "bottom_accumulation_fast_b.csv",
+    "bottom_accumulation_fast_c.csv",
+    "bottom_accumulation_fast_d.csv"
+  ],
+  "read_errors": [],
+  "candidates": [],
+  "disclaimer": "仅展示自动化筛选产物及其生成时点，不构成投资建议。"
+}

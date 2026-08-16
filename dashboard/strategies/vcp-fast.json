@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "strategy": {
+    "key": "vcp-fast",
+    "label": "VCP快速精简版",
+    "score_label": "VCP评分"
+  },
+  "run_date": "2026-08-16",
+  "generated_at": "2026-08-16T18:45:16+08:00",
+  "status": "missing_artifact",
+  "candidate_count": 0,
+  "shards": [],
+  "missing_shards": [
+    "A",
+    "B",
+    "C",
+    "D"
+  ],
+  "failed_shards": [
+    "A",
+    "B",
+    "C",
+    "D"
+  ],
+  "source_files": [],
+  "read_errors": [],
+  "candidates": [],
+  "disclaimer": "仅展示自动化筛选产物及其生成时点，不构成投资建议。"
+}

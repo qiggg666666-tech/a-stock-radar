@@ -1,0 +1,52 @@
+name: 涨停基因+资金流入监控
+
+on:
+  schedule:
+    # GitHub Actions使用UTC：北京时间09:00-11:00、13:00-15:00每15分钟运行
+    - cron: '*/15 1-3,5-7 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: limit-up-money-monitor-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-monitor.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-monitor.txt
+
+      - name: Run monitor script
+        env:
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          LOOKBACK_DAYS: '5'
+          MIN_NET_INFLOW_WAN: '3000'
+          TOP_N: '20'
+          OUTPUT_DIR: output
+        run: python monitor.py
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: limit-up-money-monitor-${{ github.run_id }}
+          path: output/
+          retention-days: 5
+          if-no-files-found: warn

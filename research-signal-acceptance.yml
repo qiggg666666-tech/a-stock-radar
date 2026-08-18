@@ -1,0 +1,172 @@
+# 手机端专用：单独显示为“Research Signal Acceptance”，没有target/all下拉框。
+# 前置文件：仓库根目录需存在 first_red_520.py、capital_flow_research_screener.py、
+# research_acceptance_summary.py 和 prepare_a_share_universe.py。
+name: Research Signal Acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-signal-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  first-red-520-acceptance:
+    name: 520首红验收（最多60只）
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: 脚本自检
+        run: |
+          python -m py_compile first_red_520.py
+          python first_red_520.py --self-test
+      - name: 运行520首红小范围验收
+        env:
+          OUTPUT_DIR: output
+          SHARD: acceptance
+          SCAN_LIMIT: '60'
+          NUM_PROCESSES: '2'
+          QUERY_TIMEOUT_SEC: '12'
+          CHECKPOINT_EVERY: '10'
+        run: |
+          python first_red_520.py \
+            --output-dir output --shard acceptance --scan-limit 60 --processes 2 \
+            --query-timeout 12 --checkpoint-every 10 --no-push
+      - name: 上传首红验收产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: first-red-520-acceptance
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  capital-flow-acceptance-universe:
+    name: 准备资本流共享股票池
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: 准备共享A股股票池
+        run: |
+          python prepare_a_share_universe.py \
+            --output output/a_share_universe.json \
+            --status-output output/a_share_universe_status.json \
+            --cache-file .a_share_universe_cache/a_share_universe.json \
+            --cache-max-age-days 3 --ak-timeout 45 --bao-timeout 35 --retries 2 --retry-wait-seconds 4
+      - name: 上传共享股票池
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capital-flow-acceptance-universe
+          path: |
+            output/a_share_universe.json
+            output/a_share_universe_status.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  capital-flow-acceptance:
+    name: 资本流验收（最多25只）
+    runs-on: ubuntu-latest
+    needs: capital-flow-acceptance-universe
+    timeout-minutes: 30
+    if: always() && needs.capital-flow-acceptance-universe.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下载共享股票池
+        uses: actions/download-artifact@v4
+        with:
+          name: capital-flow-acceptance-universe
+          path: input
+      - name: 检查共享股票池
+        run: test -s input/a_share_universe.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: 脚本自检
+        run: |
+          python -m py_compile capital_flow_research_screener.py
+          python capital_flow_research_screener.py --self-test
+      - name: 运行资本流小范围验收
+        run: |
+          python capital_flow_research_screener.py \
+            --universe-json input/a_share_universe.json --allow-universe-without-mv \
+            --preselect-top 25 --shard-index 0 --shard-count 1 --top 20 \
+            --checkpoint-every 5 --ak-timeout 12 --bao-timeout 10 --output-dir output
+      - name: 上传资本流验收产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capital-flow-acceptance
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  research-signal-acceptance-summary:
+    name: 研究验收单条汇总
+    runs-on: ubuntu-latest
+    needs: [first-red-520-acceptance, capital-flow-acceptance-universe, capital-flow-acceptance]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: 下载首红验收产物
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: first-red-520-acceptance
+          path: collected/first-red-520
+      - name: 下载资本流验收产物
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: capital-flow-acceptance
+          path: collected/capital-flow
+      - name: 生成汇总并发送一条通知
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python research_acceptance_summary.py --input-root collected --output-dir output --notify true
+      - name: 上传研究验收汇总
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-signal-acceptance-summary
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn

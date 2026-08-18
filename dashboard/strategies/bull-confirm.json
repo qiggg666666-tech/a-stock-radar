@@ -5,10 +5,10 @@
     "label": "牛市确认快速版",
     "score_label": "多头评分"
   },
-  "run_date": "2026-08-16",
-  "generated_at": "2026-08-16T18:55:55+08:00",
+  "run_date": "2026-08-18",
+  "generated_at": "2026-08-18T19:09:41+08:00",
   "status": "ready",
-  "candidate_count": 1,
+  "candidate_count": 5,
   "shards": [
     "A",
     "B",
@@ -18,22 +18,66 @@
   "missing_shards": [],
   "failed_shards": [],
   "source_files": [
-    "bull_confirm_20260816.csv",
-    "bull_confirm_20260816.csv",
-    "bull_confirm_20260816.csv",
-    "bull_confirm_20260816.csv"
+    "bull_confirm_20260818.csv",
+    "bull_confirm_20260818.csv",
+    "bull_confirm_20260818.csv",
+    "bull_confirm_20260818.csv"
   ],
   "read_errors": [],
   "candidates": [
     {
-      "code": "sh.601825",
-      "name": "沪农商行",
+      "code": "sh.600583",
+      "name": "海油工程",
       "score": 11.0,
       "tag": "强多确认",
       "extras": {
-        "最新价": 8.65,
+        "最新价": 6.02,
         "拐点数": 3.0,
-        "tags": "['🔥突破200', 'MACD金叉', 'MACD转正', '站上200', '放量1.9']"
+        "tags": "['🔥突破200', 'MACD金叉', 'MACD转正', '站上200', '放量2.7', 'RSI超买']"
+      }
+    },
+    {
+      "code": "sh.601088",
+      "name": "中国神华",
+      "score": 10.0,
+      "tag": "强多确认",
+      "extras": {
+        "最新价": 45.7,
+        "拐点数": 3.0,
+        "tags": "['MACD金叉', 'MACD转正', 'RSI上穿50', '站上200']"
+      }
+    },
+    {
+      "code": "sh.601988",
+      "name": "中国银行",
+      "score": 10.0,
+      "tag": "强多确认",
+      "extras": {
+        "最新价": 6.03,
+        "拐点数": 3.0,
+        "tags": "['MACD金叉', 'MACD转正', 'RSI上穿50', '站上200']"
+      }
+    },
+    {
+      "code": "sh.603658",
+      "name": "安图生物",
+      "score": 10.0,
+      "tag": "强多确认",
+      "extras": {
+        "最新价": 34.36,
+        "拐点数": 3.0,
+        "tags": "['🔥突破200', 'MACD金叉', 'MACD转正', '站上200']"
+      }
+    },
+    {
+      "code": "sh.600536",
+      "name": "中国软件",
+      "score": 8.0,
+      "tag": "偏多确认",
+      "extras": {
+        "最新价": 34.45,
+        "拐点数": 3.0,
+        "tags": "['MACD金叉', 'MACD转正', 'RSI上穿50', '放量2.5']"
       }
     }
   ],

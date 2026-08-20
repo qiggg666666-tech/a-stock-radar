@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""原版520首红每日汇总器：宽松定义、距520日低点涨幅严格小于5%、严格当日口径。"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import tempfile
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import requests
+
+
+DISTANCE_PRIORITY_PCT = 5.0
+
+
+def write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
+def read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def read_records(path: Path) -> list[dict[str, str]]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            return [{str(key): str(value or "") for key, value in row.items() if key is not None} for row in csv.DictReader(handle)]
+    except Exception:
+        return []
+
+
+def distance_pct(item: dict[str, str]) -> float:
+    try:
+        return float(item.get("distance_to_520_low_pct") or 999999.0)
+    except (TypeError, ValueError):
+        return 999999.0
+
+
+def is_distance_priority(item: dict[str, str]) -> bool:
+    return distance_pct(item) < DISTANCE_PRIORITY_PCT
+
+
+def candidate_line(item: dict[str, str]) -> str:
+    priority_label = "优先＜5%" if item.get("distance_priority_group") == "priority_under_5pct" else "原版保留"
+    return (
+        f"- 【{priority_label}】{item.get('code', '')} {item.get('name', '')}｜{item.get('signal_date', '')}"
+        f"｜量比{item.get('volume_ratio', '')}｜距520低点{item.get('distance_to_520_low_pct', '')}%"
+    )
+
+
+def split_bodies(header: list[str], candidates: list[dict[str, str]], footer: list[str], max_chars: int = 3400) -> list[str]:
+    lines = [candidate_line(item) for item in candidates]
+    if not lines:
+        return ["\n".join(header + ["- 当日无满足原版首红定义的检测结果。"] + footer)]
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if current and len("\n".join(header + current + [line] + footer)) > max_chars:
+            groups.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        groups.append(current)
+    return ["\n".join(header + [f"- 推送分段：{index}/{len(groups)}"] + group + footer) for index, group in enumerate(groups, start=1)]
+
+
+def send_serverchan(title: str, body: str) -> str:
+    key = os.getenv("SENDKEY") or os.getenv("SERVERCHAN_SENDKEY") or ""
+    if not key:
+        return "skipped:no_sendkey"
+    try:
+        response = requests.post(f"https://sctapi.ftqq.com/{key}.send", data={"title": title, "desp": body[:3800]}, timeout=15)
+        payload = response.json()
+        return "sent" if response.ok and payload.get("code") == 0 else f"failed:http_{response.status_code}:code_{payload.get('code', 'unknown')}"
+    except Exception as exc:
+        return f"failed:{type(exc).__name__}"
+
+
+def load_prepare_status(root: Path) -> dict[str, Any] | None:
+    for path in root.rglob("a_share_universe_status.json"):
+        payload = read_json(path)
+        if payload:
+            return payload
+    return None
+
+
+def consolidate(input_root: Path, output: Path, notify: bool) -> dict[str, Any]:
+    states = [state for path in sorted(input_root.rglob("first_red_520_?.state.json")) if (state := read_json(path))]
+    universe = max((int((item.get("universe") or {}).get("count") or 0) for item in states), default=0)
+    processed = sum(int((item.get("stats") or {}).get("processed") or 0) for item in states)
+    errors = sum(int((item.get("stats") or {}).get("source_error") or 0) for item in states)
+    asof_dates = {str(item.get("max_data_last_date") or "") for item in states if item.get("max_data_last_date")}
+    asof_date = max(asof_dates) if asof_dates else None
+    stale = sorted(str(item.get("shard") or "") for item in states if asof_date and item.get("max_data_last_date") != asof_date)
+    valid_shards = {str(item.get("shard") or "") for item in states if asof_date and item.get("max_data_last_date") == asof_date}
+    records: list[dict[str, str]] = []
+    for path in sorted(input_root.rglob("first_red_520_?.csv")):
+        shard = path.stem.rsplit("_", 1)[-1]
+        if shard in valid_shards:
+            records.extend(read_records(path))
+    candidates = [item for item in records if asof_date and item.get("signal_date") == asof_date and item.get("data_last_date") == asof_date]
+    for item in candidates:
+        item["distance_priority_group"] = "priority_under_5pct" if is_distance_priority(item) else "standard_5pct_or_more"
+    candidates.sort(key=lambda item: (0 if is_distance_priority(item) else 1, -float(item.get("volume_ratio") or 0), distance_pct(item), item.get("code") or ""))
+    priority_candidates = sum(1 for item in candidates if is_distance_priority(item))
+    standard_candidates = len(candidates) - priority_candidates
+    fields = list(dict.fromkeys(key for item in candidates for key in item)) or ["code", "name", "signal_date", "data_last_date", "volume_ratio", "distance_to_520_low_pct"]
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / "first_red_520_original_daily.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(candidates)
+    write_json(output / "first_red_520_original_daily.json", candidates)
+    coverage = round(processed * 100 / universe, 4) if universe else 0.0
+    error_rate = round(errors * 100 / processed, 4) if processed else 100.0
+    quality = {
+        "expected_shards": 5,
+        "visible_shards": len(states),
+        "universe_count": universe,
+        "processed": processed,
+        "coverage_pct": coverage,
+        "coverage_complete": bool(universe and processed == universe),
+        "source_errors": errors,
+        "source_error_rate_pct": error_rate,
+        "max_source_error_rate_pct": 5.0,
+        "asof_date": asof_date,
+        "stale_shards": stale,
+        "would_pass_legacy_gate": bool(len(states) == 5 and universe and processed == universe and error_rate <= 5.0 and not stale and asof_date),
+        "enforced": False,
+    }
+    prepare_status = load_prepare_status(input_root)
+    universe_ready = bool(asof_date and states)
+    state = "completed" if universe_ready else "universe_unavailable"
+    summary = {"generated_at": datetime.now().astimezone().isoformat(timespec="seconds"), "state": state, "quality_diagnostics": quality, "strategy_parameters": {"distance_priority_pct_exclusive": DISTANCE_PRIORITY_PCT, "distance_priority_is_filter": False}, "candidates": len(candidates), "priority_candidates_under_5pct": priority_candidates, "standard_candidates_5pct_or_more": standard_candidates, "artifacts": {"csv": "first_red_520_original_daily.csv", "json": "first_red_520_original_daily.json"}, "prepare_status": prepare_status, "disclaimer": "自动化研究筛选结果，不构成投资建议。"}
+    quality_label = "仅记录，不阻断" if universe_ready else "无可用股票池，无法扫描"
+    lines = ["# 原版520首红：全市场当日汇总", "", f"- 状态：`{state}`", f"- 统一数据与信号日期：`{asof_date or '无'}`", f"- 优先排序：距520日低点涨幅严格小于 `{DISTANCE_PRIORITY_PCT:.1f}%` 的候选置顶；其余原版候选不删除", f"- 优先组（＜{DISTANCE_PRIORITY_PCT:.1f}%）：{priority_candidates}只；原版保留组（≥{DISTANCE_PRIORITY_PCT:.1f}%）：{standard_candidates}只", f"- 覆盖：{processed}/{universe}（{coverage}%）", f"- 数据源错误：{errors}（{error_rate}%）", f"- 当日观察候选：{len(candidates)}", f"- 质量状态：`{quality_label}`", "", "> 质量指标仅用于说明数据完整度；不阻断已有同日候选的CSV生成或通知。宽松原版定义仍强制信号日等于标的最后可用日线；5%仅决定优先展示顺序，不构成硬过滤。"]
+    if notify:
+        bodies = split_bodies(lines[:-1], candidates, ["", "> 全部当日观察结果已分段完整发送；不是买卖建议。"])
+        outcomes = []
+        for index, body in enumerate(bodies, start=1):
+            title = f"原版520首红：{state} | {len(candidates)}条 | 优先＜5% {priority_candidates}只"
+            if len(bodies) > 1:
+                title += f"（{index}/{len(bodies)}）"
+            outcomes.append(send_serverchan(title, body))
+        summary["notification"] = outcomes[0] if len(outcomes) == 1 else outcomes
+    write_json(output / "first_red_520_original_daily_summary.json", summary)
+    (output / "first_red_520_original_daily_summary.md").write_text("\n".join(lines), encoding="utf-8")
+    return summary
+
+
+def self_test() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir) / "collected"
+        for index, shard in enumerate("abcde"):
+            path = root / shard
+            path.mkdir(parents=True)
+            pd = "2026-08-19" if shard != "e" else "2026-08-18"
+            (path / f"first_red_520_{shard}.state.json").write_text(json.dumps({"shard": shard, "universe": {"count": 5}, "max_data_last_date": pd, "stats": {"processed": 1, "source_error": 0}}), encoding="utf-8")
+            distance = "6.0" if shard == "a" else "1.0"
+            code = "000001" if shard == "a" else f"00000{index + 1}"
+            (path / f"first_red_520_{shard}.csv").write_text(f"code,name,signal_date,data_last_date,volume_ratio,distance_to_520_low_pct\n{code},样本,2026-08-19,2026-08-19,1.2,{distance}\n", encoding="utf-8")
+        output = Path(temp_dir) / "output"
+        summary = consolidate(root, output, False)
+        rows = read_records(output / "first_red_520_original_daily.csv")
+        assert summary["state"] == "completed" and summary["candidates"] == 4
+        assert summary["priority_candidates_under_5pct"] == 3 and summary["standard_candidates_5pct_or_more"] == 1
+        assert rows[0]["distance_priority_group"] == "priority_under_5pct"
+        assert rows[-1]["distance_priority_group"] == "standard_5pct_or_more"
+    print("FIRST_RED_520_DAILY_SUMMARY_SELF_TEST_OK")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="原版520首红每日汇总器")
+    parser.add_argument("--input-root", default="collected")
+    parser.add_argument("--output-dir", default="output")
+    parser.add_argument("--notify", choices=["true", "false"], default="true")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    print(json.dumps(consolidate(Path(args.input_root), Path(args.output_dir), args.notify == "true"), ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,121 @@
+name: Chi Diao Pre-Pink 20D Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "信号起始日（YYYY-MM-DD）"
+        required: true
+        default: "2025-01-01"
+      end_date:
+        description: "信号结束日（YYYY-MM-DD）；末端需预留20个交易日结算"
+        required: true
+        default: "2026-07-20"
+      signal_scope:
+        description: "all（默认）/ multi_pre_pink / multi_confirmed_first_pink / pre_pink_a / confirmed_first_pink / both"
+        required: true
+        default: "all"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-universe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --upgrade pip && pip install "akshare>=1.0" "pandas>=2.2,<4.0" requests baostock
+      - run: python chi_diao_zhu_li_smallcap_prepare.py --output-dir output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pre-pink-backtest-universe
+          path: output/
+          retention-days: 14
+
+  replay:
+    needs: prepare-universe
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - shard: a
+            offset: 0
+            limit: 1000
+          - shard: b
+            offset: 1000
+            limit: 1000
+          - shard: c
+            offset: 2000
+            limit: 1000
+          - shard: d
+            offset: 3000
+            limit: 1000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --upgrade pip && pip install "akshare>=1.0" "pandas>=2.2,<4.0" requests baostock
+      - uses: actions/download-artifact@v4
+        with:
+          name: pre-pink-backtest-universe
+          path: input
+      - name: Run no-lookahead 20D replay
+        run: |
+          python chi_diao_zhu_li_pre_pink_backtest.py \
+            --universe-file input/chi_diao_smallcap_universe.csv \
+            --universe-status input/chi_diao_smallcap_universe_status.json \
+            --start-date "${{ inputs.start_date }}" \
+            --end-date "${{ inputs.end_date }}" \
+            --signal-scope "${{ inputs.signal_scope }}" \
+            --scan-offset "${{ matrix.offset }}" \
+            --scan-limit "${{ matrix.limit }}" \
+            --shard-name "${{ matrix.shard }}" \
+            --output-dir output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pre-pink-backtest-${{ matrix.shard }}
+          path: output/
+          retention-days: 14
+
+  summarize:
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "pandas>=2.2,<4.0" numpy requests
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pre-pink-backtest-?
+          path: input
+          merge-multiple: false
+      - run: python chi_diao_zhu_li_pre_pink_backtest_summary.py --input-dir input --output-dir output
+      - name: Publish real backtest snapshot for mobile page
+        run: |
+          mkdir -p web_snapshots
+          cp output/pre_pink_20d_backtest_summary.json web_snapshots/pre_pink_20d_backtest_latest.json
+          rm -rf web_snapshots/pre_pink_20d_backtest_pages
+          cp -R output/web_pages web_snapshots/pre_pink_20d_backtest_pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web_snapshots/pre_pink_20d_backtest_latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update pre-pink 20d backtest snapshot"
+            git push
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pre-pink-20d-backtest-summary
+          path: output/
+          retention-days: 30

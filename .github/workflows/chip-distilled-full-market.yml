@@ -1,0 +1,61 @@
+name: Chip Distilled Full Market Research
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chip-distilled-full-market-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install --disable-pip-version-check akshare baostock pandas numpy requests
+      - run: python chip_distilled_universe.py --output chip_distilled_universe.json --timeout-seconds 120 --retries 3
+      - uses: actions/upload-artifact@v4
+        with: { name: chip-distilled-universe, path: chip_distilled_universe.json, retention-days: 5 }
+  scan:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: { shard_index: [0, 1, 2, 3] }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install --disable-pip-version-check akshare baostock pandas numpy requests
+      - uses: actions/download-artifact@v4
+        with: { name: chip-distilled-universe, path: input }
+      - run: python chip_distilled_shard.py --universe input/chip_distilled_universe.json --shard-index ${{ matrix.shard_index }} --shard-total 4 --output-dir shard-${{ matrix.shard_index }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: chip-distilled-shard-${{ matrix.shard_index }}, path: shard-${{ matrix.shard_index }}, retention-days: 5 }
+  summary:
+    needs: [prepare, scan]
+    if: ${{ always() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install --disable-pip-version-check pandas requests
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { pattern: chip-distilled-shard-*, path: collected, merge-multiple: false }
+      - run: python chip_distilled_summary.py --input-dir collected --output-dir output --shard-total 4 --notify
+        env: { SENDKEY: ${{ secrets.SENDKEY }} }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: chip-distilled-summary, path: output, retention-days: 5 }

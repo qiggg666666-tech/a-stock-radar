@@ -1,0 +1,106 @@
+name: Chip Model Full Market Research
+
+on:
+  schedule:
+    - cron: '30 14 * * 1-5' # 北京时间工作日22:30
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chip-model-full-market-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安装共同股票池依赖
+        run: python -m pip install --disable-pip-version-check akshare baostock pandas numpy
+      - name: 准备筹码模型专属全市场共同股票池
+        run: python chip_model_universe.py --output chip_model_universe.json --status-output chip_model_universe_status.json --timeout-seconds 120 --retries 3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chip-model-universe
+          path: |
+            chip_model_universe.json
+            chip_model_universe_status.json
+          retention-days: 5
+          if-no-files-found: warn
+
+  scan:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard_index: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安装扫描依赖
+        run: python -m pip install --disable-pip-version-check akshare baostock pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: chip-model-universe
+          path: input
+      - name: 扫描专属共同股票池分片
+        run: |
+          python chip_model_scanner.py \
+            --universe input/chip_model_universe.json \
+            --shard-index ${{ matrix.shard_index }} \
+            --shard-total 4 \
+            --output-dir shard-${{ matrix.shard_index }} \
+            --history-days 60 \
+            --dispose-k 0.8 \
+            --provider-timeout-seconds 35 \
+            --retries 1 \
+            --request-pause-seconds 0.20
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chip-model-shard-${{ matrix.shard_index }}
+          path: shard-${{ matrix.shard_index }}
+          retention-days: 5
+          if-no-files-found: warn
+
+  summary:
+    needs: [prepare, scan]
+    if: ${{ always() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安装汇总与通知依赖
+        run: python -m pip install --disable-pip-version-check pandas requests tabulate
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: chip-model-shard-*
+          path: collected
+          merge-multiple: false
+      - name: 汇总并尝试一条通知
+        run: python chip_model_summary.py --input-dir collected --output-dir output --shard-total 4 --max-records 100 --max-notification-items 20 --notify
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chip-model-summary
+          path: output
+          retention-days: 5
+          if-no-files-found: warn

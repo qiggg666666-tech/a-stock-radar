@@ -1,0 +1,219 @@
+# Q01独立研究入口：共同股票池 → A-D分片 → 单条汇总。
+# 首次请从Actions手动运行验收；通过后，工作日北京时间17:15自动运行。
+name: Q01 Multi-Factor OHLCV Full Market
+
+on:
+  schedule:
+    - cron: "15 10 * * 1-5" # 北京时间工作日18:15
+  workflow_dispatch:
+    inputs:
+      signal_date:
+        description: "固定信号日（YYYY-MM-DD；优先手填；留空时取北京时间最近工作日）"
+        required: false
+        default: ""
+      min_score:
+        description: "最低研究评分"
+        required: false
+        default: "65"
+      min_price:
+        description: "最低价格"
+        required: false
+        default: "3.0"
+      max_price:
+        description: "最高价格"
+        required: false
+        default: "100.0"
+      min_turnover_20d_wan:
+        description: "最低20日平均成交额（万元）"
+        required: false
+        default: "20"
+      max_20d_return_pct:
+        description: "20日最大涨幅%"
+        required: false
+        default: "28"
+      max_daily_return_pct:
+        description: "单日最大涨幅%"
+        required: false
+        default: "9.5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: q01-multi-factor-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  MIN_SCORE: ${{ inputs.min_score || '65' }}
+  MIN_PRICE: ${{ inputs.min_price || '3.0' }}
+  MAX_PRICE: ${{ inputs.max_price || '100.0' }}
+  MIN_TURNOVER_20D_WAN: ${{ inputs.min_turnover_20d_wan || '20' }}
+  MAX_20D_RETURN_PCT: ${{ inputs.max_20d_return_pct || '28' }}
+  MAX_DAILY_RETURN_PCT: ${{ inputs.max_daily_return_pct || '9.5' }}
+
+jobs:
+  prepare-universe:
+    name: 准备Q01共享A股股票池
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      signal_date: ${{ steps.signal-date.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: .a_share_universe_cache
+          key: q01-a-share-universe-${{ github.run_id }}
+          restore-keys: q01-a-share-universe-
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: 确定同日信号日
+        id: signal-date
+        env:
+          INPUT_SIGNAL_DATE: ${{ inputs.signal_date || '' }}
+        run: |
+          SIGNAL_DATE="${INPUT_SIGNAL_DATE}"
+          if [ -z "$SIGNAL_DATE" ]; then
+            TODAY="$(TZ=Asia/Shanghai date +%F)"
+            WEEKDAY="$(TZ=Asia/Shanghai date +%u)"
+            if [ "$WEEKDAY" -eq 6 ]; then SIGNAL_DATE="$(TZ=Asia/Shanghai date -d "$TODAY -1 day" +%F)";
+            elif [ "$WEEKDAY" -eq 7 ]; then SIGNAL_DATE="$(TZ=Asia/Shanghai date -d "$TODAY -2 day" +%F)";
+            else SIGNAL_DATE="$TODAY"; fi
+          fi
+          echo "value=$SIGNAL_DATE" >> "$GITHUB_OUTPUT"
+          echo "Q01_SIGNAL_DATE=$SIGNAL_DATE" >> "$GITHUB_ENV"
+      - name: 自检并获取共享股票池
+        run: |
+          python -m py_compile prepare_a_share_universe.py multi_factor_ohlcv_research.py multi_factor_ohlcv_summary.py
+          python prepare_a_share_universe.py --self-test
+          python multi_factor_ohlcv_research.py --self-test
+          python prepare_a_share_universe.py \
+            --output output/a_share_universe.json \
+            --status-output output/a_share_universe_status.json \
+            --cache-file .a_share_universe_cache/a_share_universe.json \
+            --cache-max-age-days 3 --seed-max-age-days 10 \
+            --ak-timeout 45 --bao-timeout 35 --retries 2 --retry-wait-seconds 4
+      - name: 上传共享股票池
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: q01-multi-factor-universe
+          path: |
+            output/a_share_universe.json
+            output/a_share_universe_status.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  scan:
+    name: Q01全市场 · ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    needs: prepare-universe
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - { shard: A, index: 0 }
+          - { shard: B, index: 1 }
+          - { shard: C, index: 2 }
+          - { shard: D, index: 3 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: q01-multi-factor-universe
+          path: input
+      - name: 校验共同股票池
+        run: test -s input/a_share_universe.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安装依赖与脚本自检
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m py_compile multi_factor_ohlcv_research.py
+          python multi_factor_ohlcv_research.py --self-test
+      - name: 扫描共同股票池分片
+        run: |
+          python multi_factor_ohlcv_research.py \
+            --universe-file input/a_share_universe.json \
+            --shard-index "${{ matrix.index }}" --shard-count 4 \
+            --signal-date "${{ needs.prepare-universe.outputs.signal_date }}" \
+            --min-score "$MIN_SCORE" --min-price "$MIN_PRICE" --max-price "$MAX_PRICE" \
+            --min-turnover-20d-wan "$MIN_TURNOVER_20D_WAN" \
+            --max-20d-return-pct "$MAX_20D_RETURN_PCT" --max-daily-return-pct "$MAX_DAILY_RETURN_PCT" \
+            --top 80 --request-pause-seconds 0.20 --output-dir output
+      - name: 上传Q01分片产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: q01-multi-factor-${{ matrix.shard }}
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
+  summary:
+    name: Q01全市场单条汇总
+    runs-on: ubuntu-latest
+    needs: [prepare-universe, scan]
+    if: always()
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: 下载共享股票池状态与A-D分片
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: q01-multi-factor-*
+          path: collected
+          merge-multiple: false
+      - name: 汇总、板块标注与单条通知
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python multi_factor_ohlcv_summary.py \
+            --input-root collected --universe-status collected/q01-multi-factor-universe/a_share_universe_status.json \
+            --output-dir output --expected-shards 4 --top 60 --notify true
+      - name: 上传Q01汇总产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: q01-multi-factor-summary
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: 发布真实手机端快照
+        if: always()
+        run: |
+          test -s output/multi_factor_ohlcv_snapshot.json
+          mkdir -p web_snapshots dashboard/strategies
+          cp output/multi_factor_ohlcv_snapshot.json web_snapshots/multi_factor_ohlcv_latest.json
+          cp output/multi_factor_ohlcv_snapshot.json dashboard/strategies/multi-factor-ohlcv.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web_snapshots/multi_factor_ohlcv_latest.json dashboard/strategies/multi-factor-ohlcv.json
+          git diff --cached --quiet || git commit -m "chore(q01): publish full-market snapshot"
+          git push

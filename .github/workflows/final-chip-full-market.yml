@@ -1,0 +1,86 @@
+name: FINAL Chip Full Market Research
+
+on:
+  schedule:
+    - cron: "50 7 * * 1-5" # 北京时间工作日15:50
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: final-chip-full-market-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: .final-chip-cache
+          key: final-chip-universe-v1
+      - run: pip install --disable-pip-version-check akshare baostock pandas numpy requests
+      - run: python final_chip_universe.py --output final_chip_universe.json --cache-path .final-chip-cache/universe.json --cache-max-age-hours 72 --timeout-seconds 90 --retries 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: final-chip-universe
+          path: final_chip_universe.json
+          retention-days: 5
+  scan:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard_index: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --disable-pip-version-check akshare baostock pandas numpy requests
+      - uses: actions/download-artifact@v4
+        with:
+          name: final-chip-universe
+          path: input
+      - run: python final_chip_shard.py --universe input/final_chip_universe.json --shard-index ${{ matrix.shard_index }} --shard-total 4 --output-dir final-chip-shard-${{ matrix.shard_index }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: final-chip-shard-${{ matrix.shard_index }}
+          path: final-chip-shard-${{ matrix.shard_index }}
+          retention-days: 5
+  summary:
+    needs: [prepare, scan]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --disable-pip-version-check pandas requests
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: final-chip-shard-*
+          path: collected
+          merge-multiple: false
+      - run: python final_chip_summary.py --input-dir collected --output-dir output --shard-total 4 --notify
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: final-chip-summary
+          path: output
+          retention-days: 5

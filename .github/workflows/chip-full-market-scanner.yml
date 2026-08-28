@@ -1,0 +1,82 @@
+name: Chip Full Market Scanner Independent
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 14 * * 1-5" # 北京时间工作日22:30
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chip-full-market-scanner-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SHARD_TOTAL: "4"
+  NUM_PROCESSES: "2"
+  CHIP_PROFILE: "balanced"
+  CHIP_PEAK_ZONE: "red"
+  CHIP_CONFIRM_MODE: "and"
+  PUSH_ON_SHARD: "0"
+  EXCLUDE_ST: "1"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard_index: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install isolated scanner dependencies
+        run: pip install --disable-pip-version-check baostock akshare pandas numpy requests
+      - name: Run independent scanner shard
+        env:
+          SHARD_INDEX: ${{ matrix.shard_index }}
+        run: python chip_full_market_scanner.py
+      - name: Upload shard artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chip-full-market-shard-${{ matrix.shard_index }}
+          path: results/
+          retention-days: 14
+
+  summary:
+    needs: scan
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download completed shard artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: chip-full-market-shard-*
+          path: collected
+          merge-multiple: false
+      - name: Install summary notification dependency
+        run: pip install --disable-pip-version-check requests
+      - name: Build summary and send one Server酱 notification
+        if: always()
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: python chip_full_market_summary.py --input-dir collected --output-dir full-market-summary --notify
+      - name: Upload full-market summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chip-full-market-summary
+          path: full-market-summary/
+          retention-days: 14

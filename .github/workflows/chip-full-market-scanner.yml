@@ -1,0 +1,109 @@
+name: Chip Full Market Scanner Independent
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 14 * * 1-5" # 北京时间工作日22:30
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chip-full-market-scanner-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SHARD_TOTAL: "4"
+  NUM_PROCESSES: "2"
+  CHIP_PROFILE: "balanced"
+  CHIP_PEAK_ZONE: "red"
+  CHIP_CONFIRM_MODE: "and"
+  PUSH_ON_SHARD: "0"
+  EXCLUDE_ST: "1"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard_index: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install isolated scanner dependencies
+        run: pip install --disable-pip-version-check baostock akshare pandas numpy requests
+      - name: Run independent scanner shard
+        env:
+          SHARD_INDEX: ${{ matrix.shard_index }}
+        run: python chip_full_market_scanner.py
+      - name: Upload shard artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chip-full-market-shard-${{ matrix.shard_index }}
+          path: results/
+          retention-days: 14
+
+  summary:
+    needs: scan
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download completed shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: chip-full-market-shard-*
+          path: collected
+          merge-multiple: false
+      - name: Build transparent summary artifact
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out = Path("full-market-summary")
+          out.mkdir(exist_ok=True)
+          rows = []
+          files = sorted(Path("collected").glob("**/*_data.json"))
+          for path in files:
+              try:
+                  data = json.loads(path.read_text(encoding="utf-8"))
+                  rows.extend(data if isinstance(data, list) else [])
+              except Exception as exc:
+                  rows.append({"error": f"summary_read_error:{path}:{exc}"})
+          ok = [r for r in rows if isinstance(r, dict) and "error" not in r]
+          errors = [r for r in rows if isinstance(r, dict) and "error" in r]
+          tradeable = [r for r in ok if r.get("is_tradeable") is True]
+          spikes = [r for r in ok if r.get("is_spike_tradeable") is True]
+          summary = {
+              "schema": "chip-full-market-summary/v1",
+              "status": "ready" if ok else "degraded",
+              "notification": {"status": "disabled", "reason": "independent_module_no_push"},
+              "shards_found": len(files),
+              "scanned": len(rows),
+              "success": len(ok),
+              "errors": len(errors),
+              "tradeable": len(tradeable),
+              "spike_tradeable": len(spikes),
+              "error_samples": errors[:20],
+          }
+          (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+          (out / "all_rows.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(json.dumps(summary, ensure_ascii=False))
+          PY
+      - name: Upload full-market summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chip-full-market-summary
+          path: full-market-summary/
+          retention-days: 14

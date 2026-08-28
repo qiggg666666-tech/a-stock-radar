@@ -1,0 +1,60 @@
+name: Chip Parameter Comparison Experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      shard_total:
+        description: "分片总数；首次验证建议20，完整对比设为1"
+        required: true
+        default: "20"
+      shard_index:
+        description: "当前分片编号；shard_total=1时填写0"
+        required: true
+        default: "0"
+      num_processes:
+        description: "每个配置的本地进程数"
+        required: true
+        default: "2"
+      timeout:
+        description: "每组配置硬超时（秒）"
+        required: true
+        default: "900"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chip-param-comparison-${{ github.ref }}-${{ inputs.shard_index }}-${{ inputs.shard_total }}
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install isolated experiment dependencies
+        run: pip install --disable-pip-version-check baostock akshare pandas numpy requests
+      - name: Run six-profile comparison
+        run: >-
+          python chip_param_compare.py
+          --shard-total ${{ inputs.shard_total }}
+          --shard-index ${{ inputs.shard_index }}
+          --num-processes ${{ inputs.num_processes }}
+          --timeout ${{ inputs.timeout }}
+      - name: Collect comparison artifacts
+        if: always()
+        run: |
+          mkdir -p chip-param-artifacts
+          cp -f comparison_summary.json comparison_report.md chip-param-artifacts/ 2>/dev/null || true
+          cp -f results_*.json chip-param-artifacts/ 2>/dev/null || true
+          cp -rf logs chip-param-artifacts/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chip-param-comparison-${{ inputs.shard_index }}-${{ github.run_number }}
+          path: chip-param-artifacts/
+          retention-days: 14

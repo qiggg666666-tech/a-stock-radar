@@ -1,0 +1,109 @@
+name: LowRise 520 Full Market Research
+
+on:
+  schedule:
+    # GitHub Actions五段cron；UTC 12:30 = 工作日北京时间20:30。
+    - cron: "30 12 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      signal_date:
+        required: false
+        default: ""
+        description: "固定信号日YYYY-MM-DD"
+      priority_distance_pct:
+        required: false
+        default: "5.0"
+        description: "距520日低点优先排序阈值（仅置顶，不过滤候选）"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "lowrise-520-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      signal_date: ${{ steps.date.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install akshare baostock pandas requests
+      - id: date
+        env:
+          INPUT: ${{ inputs.signal_date || '' }}
+        run: |
+          D="$INPUT"
+          if [ -z "\( D" ]; then D=" \)(TZ=Asia/Shanghai date +%F)"; fi
+          echo "value=$D" >> "$GITHUB_OUTPUT"
+      - run: |
+          python -m py_compile lowrise_520_universe.py lowrise_520_shard.py lowrise_520_summary.py
+          python lowrise_520_universe.py --self-test
+          python lowrise_520_shard.py --self-test
+          python lowrise_520_universe.py --signal-date "${{ steps.date.outputs.value }}" --output output/lowrise_universe.json
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowrise-520-universe
+          path: output/lowrise_universe.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  scan:
+    runs-on: ubuntu-latest
+    needs: prepare
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard_index: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install akshare baostock pandas
+      - uses: actions/download-artifact@v4
+        with:
+          name: lowrise-520-universe
+          path: input
+      - run: python lowrise_520_shard.py --universe-file input/lowrise_universe.json --signal-date "\( {{ needs.prepare.outputs.signal_date }}" --shard-index " \){{ matrix.shard_index }}" --shard-count 4 --priority-distance-pct "\( {{ inputs.priority_distance_pct || '5.0' }}" --output-dir "output/shard- \){{ matrix.shard_index }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowrise-520-shard-${{ matrix.shard_index }}
+          path: output
+          retention-days: 30
+          if-no-files-found: warn
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [prepare, scan]
+    if: ${{ always() }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install pandas requests
+      - continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lowrise-520-shard-*
+          path: collected
+      - run: python lowrise_520_summary.py --input-root collected --output-dir output/summary --notify
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowrise-520-summary
+          path: output/summary
+          retention-days: 30
+          if-no-files-found: warn

@@ -105,7 +105,7 @@ def format_washout_lines(df: pd.DataFrame) -> list[str]:
             f"｜收盘{row.get('close', '')}"
             f"｜{row.get('stage_note', '')}"
             f"｜穿透率{row.get('cross_ratio_pct', '')}%"
-            f"｜90%成本区{row.get('cost90_low', '')}\~{row.get('cost90_high', '')}"
+            f"｜90%成本区{row.get('cost90_low', '')}~{row.get('cost90_high', '')}"
             f"｜区间宽度{row.get('conc90_width_pct', '')}%"
             f"｜均线{row.get('ma_signal', '') or '无'}"
             f"｜量比{row.get('volume_ratio', '')}"
@@ -130,8 +130,47 @@ def format_first_red_lines(df: pd.DataFrame) -> list[str]:
     return lines
 
 
+def _boll_macd_str(row: pd.Series) -> str:
+    """布林带 + MACD 简短标签，缺字段时静默跳过。"""
+    parts: list[str] = []
+    mid = row.get("boll_mid", None)
+    upper = row.get("boll_upper", None)
+    lower = row.get("boll_lower", None)
+    if mid is not None and not (isinstance(mid, float) and pd.isna(mid)):
+        try:
+            parts.append(f"布林{float(lower):.2f}/{float(mid):.2f}/{float(upper):.2f}")
+        except (TypeError, ValueError):
+            pass
+    pos = row.get("boll_pos", None)
+    if pos is not None and not (isinstance(pos, float) and pd.isna(pos)):
+        try:
+            parts.append(f"轨位{float(pos):.2f}")
+        except (TypeError, ValueError):
+            pass
+    if str(row.get("boll_squeeze", "")).strip().lower() in {"true", "1"}:
+        parts.append("布林收窄")
+    dif = row.get("macd_dif", None)
+    dea = row.get("macd_dea", None)
+    hist = row.get("macd_hist", None)
+    if dif is not None and not (isinstance(dif, float) and pd.isna(dif)):
+        try:
+            parts.append(f"MACD{float(dif):.3f}/{float(dea):.3f}/{float(hist):.3f}")
+        except (TypeError, ValueError):
+            pass
+    tags = []
+    if str(row.get("macd_golden_cross", "")).strip().lower() in {"true", "1"}:
+        tags.append("金叉")
+    if str(row.get("macd_dif_above_zero", "")).strip().lower() in {"true", "1"}:
+        tags.append("零上")
+    if str(row.get("macd_hist_expanding", "")).strip().lower() in {"true", "1"}:
+        tags.append("柱放大")
+    if tags:
+        parts.append("MACD" + "+".join(tags))
+    return ("｜" + "｜".join(parts)) if parts else ""
+
+
 def format_red_heavy_wide_zone_lines(df: pd.DataFrame) -> list[str]:
-    """红筹码占优 ∩ 宽幅堆积区 同时命中。"""
+    """红筹码占优 ∩ 宽幅堆积区 同时命中；附加布林带与 MACD 摘要。"""
     lines = []
     for number, (_, row) in enumerate(df.iterrows(), 1):
         lines.append(
@@ -139,12 +178,13 @@ def format_red_heavy_wide_zone_lines(df: pd.DataFrame) -> list[str]:
             f"｜获利盘{row.get('profit_pct', '')}%"
             f"｜套牢盘{row.get('green_chip_pct', '')}%"
             f"｜{row.get('wide_state', '') or '无'}"
-            f"｜宽幅区{row.get('wide_zone_low', '')}\~{row.get('wide_zone_high', '')}"
+            f"｜宽幅区{row.get('wide_zone_low', '')}~{row.get('wide_zone_high', '')}"
             f"｜距上沿{row.get('wide_dist_pct', '')}%"
             f"｜宽幅分{row.get('wide_score', '')}"
             f"｜收盘{row.get('close', '')}"
             f"｜均线{row.get('ma_signal', '') or '无'}"
             f"｜量比{row.get('volume_ratio', '')}"
+            f"{_boll_macd_str(row)}"
             f"{_pe_str(row)}"
             f"{_fund_flow_str(row)}"
         )
@@ -334,7 +374,7 @@ def main() -> int:
             | _bool_col(records, "daily_long_lower")
             | _bool_col(records, "is_wide_zone")
         )
-        candidate = records[ma_strong_signal & \~already_covered].copy()
+        candidate = records[ma_strong_signal & ~already_covered].copy()
         if not candidate.empty:
             rank = _numeric_col(candidate, "ma_score")
             ma_strong = candidate.assign(_rank=rank).sort_values(

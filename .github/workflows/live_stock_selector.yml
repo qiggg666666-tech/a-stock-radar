@@ -1,0 +1,111 @@
+name: Live Stock Selector (实战选股)
+
+on:
+  schedule:
+    - cron: "30 14 * * *"   # 北京时间每天 22:30
+  workflow_dispatch:
+    inputs:
+      top_n:
+        description: "输出推荐股票数量"
+        type: string
+        default: "30"
+      notify:
+        description: "是否推送 Server酱"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-stock-selector-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check akshare baostock pandas numpy requests pyarrow
+      - name: Check final_chip_research
+        run: |
+          if [ ! -f final_chip_research.py ]; then
+            echo "错误：缺少 final_chip_research.py"
+            exit 1
+          fi
+          python -c "from final_chip_research import analyze, fetch_ohlcv; print('final_chip_research OK')"
+
+  scan:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check akshare baostock pandas numpy requests pyarrow
+      - name: Run live shard ${{ matrix.shard }}
+        run: python live_stock_selector.py --shard ${{ matrix.shard }}
+      - name: Upload shard result
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-shard-${{ matrix.shard }}
+          path: live_selector_cache/
+          if-no-files-found: warn
+          retention-days: 5
+
+  select:
+    needs: [prepare, scan]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check akshare baostock pandas numpy requests pyarrow
+      - name: Download all shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: live-shard-*
+          path: live_selector_cache
+          merge-multiple: true
+      - name: Check downloaded files
+        run: |
+          echo "缓存目录内容："
+          ls -la live_selector_cache || echo "目录不存在"
+          find live_selector_cache -name "*.csv" | head -20 || true
+      - name: Merge & Select + Server酱推送
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+        run: |
+          TOP_N=${{ github.event.inputs.top_n || '30' }}
+          NOTIFY_FLAG=""
+          if [ "\( {{ github.event.inputs.notify }}" = "true" ] || [ " \){{ github.event_name }}" = "schedule" ]; then
+            NOTIFY_FLAG="--notify"
+          fi
+          python live_stock_selector.py --merge --top $TOP_N $NOTIFY_FLAG
+      - name: Upload final selection
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-selection-result
+          path: |
+            live_select_*.csv
+          if-no-files-found: warn
+          retention-days: 14

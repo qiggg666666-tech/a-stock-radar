@@ -5,8 +5,8 @@
     "label": "Q01多因子",
     "score_label": "研究总评分"
   },
-  "run_date": "2026-09-25",
-  "generated_at": "2026-09-25T19:07:20+00:00",
+  "run_date": "2026-09-29",
+  "generated_at": "2026-09-28T21:52:49+00:00",
   "status": "ready",
   "candidate_count": 0,
   "shards": [
@@ -45,7 +45,7 @@
     "live_only": true,
     "include_sector_labels": false
   },
-  "processed": 5021,
+  "processed": 5022,
   "errors": 49,
   "disclaimer": "Q01为日线OHLCV研究筛选，板块为运行时元数据；不构成投资建议。",
   "notification_parts": 1,

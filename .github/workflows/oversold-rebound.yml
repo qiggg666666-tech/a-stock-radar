@@ -1,0 +1,216 @@
+# 超跌反弹选股 —— 全市场分片扫描 + 合并推送
+# 放到仓库: .github/workflows/oversold-rebound.yml
+#
+# 依赖仓库根目录:
+#   - oversold_rebound_selector.py
+#   - final_chip_research.py（获利过滤）
+# Secrets:
+#   - SENDKEY（Server酱）
+#
+# 说明：
+#   * 本工作流的扫描本来就是全市场（不限共振池），所以“早期拐点”候选（底部放量突破200日线）
+#     在同一次扫描里顺带记录（--inflection，几乎不增加耗时）。
+#   * 拐点名单的“基本面查询 + 推送”较慢，且 Live Stock Selector 工作流里也有同样的拐点名单。
+#     为避免两边重复推送，这里定时任务默认不生成拐点名单；
+#     想让本工作流负责拐点，把下面 RUN_INFLECTION_ON_SCHEDULE 改成 "true"（并在另一边关掉 run_inflection）。
+
+name: Oversold Rebound Selector
+
+env:
+  RUN_INFLECTION_ON_SCHEDULE: "false"
+
+on:
+  schedule:
+    # 北京时间约 23:00（UTC 15:00），交易日可按需改
+    - cron: "0 15 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      top_n:
+        description: "合并后推送只数"
+        required: false
+        default: "20"
+      notify:
+        description: "是否 Server酱 推送 (true/false)"
+        required: false
+        default: "true"
+      require:
+        description: "形态硬过滤：ma250=年线长影线 / volbar=倍量柱 / bk200=放量突破200日线 / any=三者其一 / none=只标注加分"
+        type: choice
+        required: false
+        default: "none"
+        options: [none, ma250, volbar, bk200, any]
+      exclude_st:
+        description: "跳过 ST/*ST/退市整理股"
+        type: boolean
+        required: false
+        default: false
+      fundamentals:
+        description: "合并时对候选池加查基本面领先指标（较慢）"
+        type: boolean
+        required: false
+        default: false
+      run_inflection:
+        description: "同时生成早期拐点名单（放量突破200日线 + 基本面）"
+        type: boolean
+        required: false
+        default: false
+      inflection_min_leading:
+        description: "拐点名单：领先指标（含200日线突破）至少满足几项"
+        required: false
+        default: "2"
+
+jobs:
+  scan:
+    name: Scan shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install akshare pandas numpy requests baostock pyarrow
+
+      - name: Run shard ${{ matrix.shard }}
+        env:
+          PYTHONUNBUFFERED: "1"
+          REQUIRE_INPUT: ${{ github.event.inputs.require }}
+          EXCLUDE_ST_INPUT: ${{ github.event.inputs.exclude_st }}
+        run: |
+          # --inflection：同一次全市场扫描里顺带记录“放量突破200日线”候选，不单独再扫一遍
+          FLAGS="--inflection"
+          if [ "$EXCLUDE_ST_INPUT" = "true" ]; then
+            FLAGS="$FLAGS --exclude-st"
+          fi
+          if [ -n "$REQUIRE_INPUT" ] && [ "$REQUIRE_INPUT" != "none" ]; then
+            FLAGS="$FLAGS --require $REQUIRE_INPUT"
+          fi
+          echo "flags: $FLAGS"
+          python oversold_rebound_selector.py --shard ${{ matrix.shard }} $FLAGS
+
+      - name: Upload shard artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osr-shard-${{ matrix.shard }}
+          path: |
+            oversold_rebound_cache/osr_shard_*.csv
+            oversold_rebound_cache/inflection_shard_*.csv
+          if-no-files-found: warn
+          retention-days: 7
+
+  merge:
+    name: Merge + Notify
+    needs: scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: always()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install akshare pandas numpy requests baostock pyarrow
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: osr-shard-*
+          path: artifacts_dl
+          merge-multiple: true
+
+      - name: Collect shard CSVs
+        run: |
+          mkdir -p oversold_rebound_cache
+          echo "=== downloaded tree ==="
+          find artifacts_dl -type f -name "*.csv" 2>/dev/null | head -50 || true
+          find artifacts_dl -type f -name "osr_shard_*.csv" -exec cp -f {} oversold_rebound_cache/ \; 2>/dev/null || true
+          find artifacts_dl -type f -name "inflection_shard_*.csv" -exec cp -f {} oversold_rebound_cache/ \; 2>/dev/null || true
+          echo "=== cache ==="
+          ls -la oversold_rebound_cache/ || true
+          n=$(ls oversold_rebound_cache/osr_shard_*.csv 2>/dev/null | wc -l)
+          echo "shard csv count: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "WARNING: no shard csv found"
+          fi
+          echo "inflection shard csv count: $(ls oversold_rebound_cache/inflection_shard_*.csv 2>/dev/null | wc -l)"
+
+      - name: Merge and select
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+          PYTHONUNBUFFERED: "1"
+          TOP_INPUT: ${{ github.event.inputs.top_n }}
+          NOTIFY_INPUT: ${{ github.event.inputs.notify }}
+          REQUIRE_INPUT: ${{ github.event.inputs.require }}
+          FUND_INPUT: ${{ github.event.inputs.fundamentals }}
+        run: |
+          TOP="${TOP_INPUT:-20}"
+          NOTIFY="${NOTIFY_INPUT:-true}"
+          EXTRA=""
+          if [ "$NOTIFY" = "true" ] || [ "$NOTIFY" = "True" ]; then
+            EXTRA="--notify"
+          fi
+          if [ -n "$REQUIRE_INPUT" ] && [ "$REQUIRE_INPUT" != "none" ]; then
+            EXTRA="$EXTRA --require $REQUIRE_INPUT"
+          fi
+          if [ "$FUND_INPUT" = "true" ]; then
+            EXTRA="$EXTRA --fundamentals"
+          fi
+          echo "SENDKEY 是否存在: $([ -n "$SENDKEY" ] && echo '是' || echo '否')"
+          echo "extra: $EXTRA"
+          python oversold_rebound_selector.py --merge --top "$TOP" $EXTRA
+
+      - name: Early inflection list (放量突破200日线 + 基本面领先指标)
+        # 定时任务是否生成由顶部 RUN_INFLECTION_ON_SCHEDULE 决定；手动触发看 run_inflection 开关。
+        # 主合并失败也照样尝试；拐点失败不影响整个 workflow。
+        if: >
+          always() &&
+          ((github.event_name == 'schedule' && env.RUN_INFLECTION_ON_SCHEDULE == 'true') ||
+           github.event.inputs.run_inflection == 'true')
+        continue-on-error: true
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+          PYTHONUNBUFFERED: "1"
+          NOTIFY_INPUT: ${{ github.event.inputs.notify }}
+          MINL_INPUT: ${{ github.event.inputs.inflection_min_leading }}
+        run: |
+          MINL="${MINL_INPUT:-2}"
+          NOTIFY="${NOTIFY_INPUT:-true}"
+          EXTRA=""
+          if [ "$NOTIFY" = "true" ] || [ "$NOTIFY" = "True" ]; then
+            EXTRA="--notify"
+          fi
+          echo "拐点名单：领先指标至少 $MINL 项，extra=$EXTRA"
+          python oversold_rebound_selector.py --merge --inflection-only --top 20 $EXTRA --inflection-min-leading "$MINL"
+
+      - name: Upload result CSVs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oversold-rebound-result
+          path: |
+            oversold_rebound_*.csv
+            inflection_candidates_*.csv
+            oversold_rebound_cache/
+          if-no-files-found: warn
+          # 保留到 90 天（仓库允许的上限），方便之后用 signal_backtest.py 统计历史名单表现
+          retention-days: 90

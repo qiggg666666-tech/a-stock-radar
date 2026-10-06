@@ -5,15 +5,19 @@
     "label": "Q01多因子",
     "score_label": "研究总评分"
   },
-  "run_date": "2026-10-06",
-  "generated_at": "2026-10-05T22:07:33+00:00",
-  "status": "partial",
+  "run_date": "2026-10-07",
+  "generated_at": "2026-10-06T20:43:05+00:00",
+  "status": "ready",
   "candidate_count": 0,
   "shards": [
+    "0",
     "1",
+    "2",
     "3"
   ],
   "source_files": [
+    "multi_factor_ohlcv_candidates.csv",
+    "multi_factor_ohlcv_candidates.csv",
     "multi_factor_ohlcv_candidates.csv",
     "multi_factor_ohlcv_candidates.csv"
   ],
@@ -41,13 +45,13 @@
     "live_only": true,
     "include_sector_labels": false
   },
-  "processed": 2512,
-  "errors": 29,
+  "processed": 5025,
+  "errors": 49,
   "disclaimer": "Q01为日线OHLCV研究筛选，板块为运行时元数据；不构成投资建议。",
   "notification_parts": 1,
   "notification_candidate_count": 0,
   "notification_total_candidate_count": 0,
-  "notification_content_length": 182,
+  "notification_content_length": 180,
   "notification_serverchan": "sent",
   "notification_telegram": "not_attempted:serverchan_sent",
   "notification_telegram_target": "not_attempted:serverchan_sent",

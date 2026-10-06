@@ -1,0 +1,346 @@
+name: Live Stock Selector (实战选股)
+
+on:
+  schedule:
+    - cron: "30 14 * * *"   # 北京时间每天 22:30
+  workflow_dispatch:
+    inputs:
+      top_n:
+        description: "输出推荐股票数量"
+        type: string
+        default: "30"
+      notify:
+        description: "是否推送 Server酱"
+        type: boolean
+        default: true
+      use_resonate_universe:
+        description: "先跑多周期共振池再选股"
+        type: boolean
+        default: true
+      run_inflection:
+        description: "同时生成早期拐点名单（全市场放量突破200日线 + 基本面）"
+        type: boolean
+        default: true
+      inflection_min_leading:
+        description: "拐点名单：领先指标（含200日线突破）至少满足几项"
+        type: string
+        default: "2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-stock-selector-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check akshare baostock pandas numpy requests pyarrow
+      - name: Check required scripts
+        run: |
+          for f in final_chip_research.py live_stock_selector.py mtf_resonate_universe.py; do
+            if [ ! -f "$f" ]; then
+              echo "错误：缺少 $f"
+              exit 1
+            fi
+          done
+          python -c "from final_chip_research import analyze, fetch_ohlcv; print('final_chip_research OK')"
+          python -c "import live_stock_selector; print('live_stock_selector OK')"
+
+  # ---------- 第1步：多周期共振宇宙（矩阵分片） ----------
+  resonate:
+    needs: prepare
+    if: >
+      github.event_name == 'schedule' ||
+      github.event.inputs.use_resonate_universe != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check akshare baostock pandas numpy requests pyarrow
+      - name: Run resonate shard ${{ matrix.shard }}
+        run: python mtf_resonate_universe.py --shard ${{ matrix.shard }}
+      - name: Upload resonate shard
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resonate-shard-${{ matrix.shard }}
+          path: |
+            mtf_universe_cache/
+            mtf_resonate_universe.csv
+            mtf_resonate_universe_*.csv
+          if-no-files-found: warn
+          retention-days: 5
+
+  merge-universe:
+    needs: [prepare, resonate]
+    if: >
+      always() &&
+      (github.event_name == 'schedule' ||
+       github.event.inputs.use_resonate_universe != 'false')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check pandas
+      - name: Download resonate shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: resonate-shard-*
+          path: mtf_universe_cache
+          merge-multiple: true
+      - name: Merge universe CSV
+        run: |
+          python << 'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("mtf_universe_cache")
+          print("cache tree:")
+          if root.exists():
+              for p in sorted(root.rglob("*")):
+                  if p.is_file():
+                      print(" ", p, p.stat().st_size)
+          else:
+              print("  (missing)")
+
+          patterns = [
+              "resonate_shard_*.csv",
+              "universe_*.csv",
+              "mtf_resonate_universe*.csv",
+              "*.csv",
+          ]
+          files = []
+          seen = set()
+          for pat in patterns:
+              for f in sorted(root.rglob(pat)):
+                  key = str(f.resolve())
+                  if key not in seen:
+                      seen.add(key)
+                      files.append(f)
+
+          print("candidate csv:", [str(f) for f in files])
+          frames = []
+          for f in files:
+              try:
+                  df = pd.read_csv(f, dtype=str)
+                  if df is None or df.empty:
+                      continue
+                  if "code" not in df.columns:
+                      df = df.rename(columns={df.columns[0]: "code"})
+                  df["code"] = (
+                      df["code"].astype(str)
+                      .str.replace(r"\.0$", "", regex=True)
+                      .str.strip()
+                      .str.zfill(6)
+                  )
+                  df = df[df["code"].str.match(r"^\d{6}$", na=False)]
+                  if not df.empty:
+                      frames.append(df)
+                      print(f"  + {f.name}: {len(df)} rows")
+              except Exception as e:
+                  print("skip", f, e)
+
+          if not frames:
+              out = pd.DataFrame(columns=["code"])
+              print("WARNING: no shard data, empty universe")
+          else:
+              out = pd.concat(frames, ignore_index=True)
+              out = out.drop_duplicates("code").sort_values("code")
+          out.to_csv("mtf_resonate_universe.csv", index=False, encoding="utf-8-sig")
+          print("universe size:", len(out))
+          print(out.head())
+          PY
+          ls -la mtf_resonate_universe.csv
+          wc -l mtf_resonate_universe.csv
+          head -5 mtf_resonate_universe.csv || true
+      - name: Upload merged universe
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtf-resonate-universe
+          path: mtf_resonate_universe.csv
+          if-no-files-found: error
+          retention-days: 5
+
+  # ---------- 第2步：在共振池内做红筹/打分选股 ----------
+  scan:
+    needs: [prepare, merge-universe]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check akshare baostock pandas numpy requests pyarrow
+      - name: Download universe (if any)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: mtf-resonate-universe
+          path: .
+      - name: Run live shard ${{ matrix.shard }}
+        run: |
+          if [ -f mtf_resonate_universe.csv ]; then
+            N=$(python -c "import pandas as pd; print(len(pd.read_csv('mtf_resonate_universe.csv')))")
+            echo "使用共振池 universe，约 $N 只"
+            python live_stock_selector.py --shard ${{ matrix.shard }} --universe mtf_resonate_universe.csv --mtf-filter off
+          else
+            echo "无共振池，回退全市场扫描"
+            python live_stock_selector.py --shard ${{ matrix.shard }} --mtf-filter off
+          fi
+      - name: Upload shard result
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-shard-${{ matrix.shard }}
+          path: live_selector_cache/
+          if-no-files-found: warn
+          retention-days: 5
+
+  # ---------- 第2b步：早期拐点——全市场扫描（不受共振池/筹码过滤限制，与 scan 并行） ----------
+  # 为什么单独一个 job：共振池本身要求“已经走强”，而拐点要找的是“刚从底部放量站上200日线”的股票，
+  # 两者几乎不重叠；如果只在共振池里找，拐点名单基本为空。
+  inflection-scan:
+    needs: prepare
+    if: >
+      always() && needs.prepare.result == 'success' &&
+      (github.event_name == 'schedule' ||
+       github.event.inputs.run_inflection != 'false')
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check akshare baostock pandas numpy requests pyarrow
+      - name: Run inflection scan shard ${{ matrix.shard }}
+        run: python live_stock_selector.py --shard ${{ matrix.shard }} --inflection-scan --exclude-st
+      - name: Upload inflection shard
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: inflection-shard-${{ matrix.shard }}
+          path: live_selector_cache/inflection_shard_*.csv
+          if-no-files-found: warn
+          retention-days: 5
+
+  # ---------- 第3步：合并 + Server酱 ----------
+  select:
+    needs: [prepare, scan, inflection-scan]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check akshare baostock pandas numpy requests pyarrow
+      - name: Download all shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: live-shard-*
+          path: live_selector_cache
+          merge-multiple: true
+      - name: Download inflection shards (if any)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: inflection-shard-*
+          path: live_selector_cache
+          merge-multiple: true
+      - name: Check downloaded files
+        run: |
+          echo "缓存目录内容："
+          ls -la live_selector_cache || echo "目录不存在"
+          find live_selector_cache -name "*.csv" | head -40 || true
+      - name: Merge & Select + Server酱推送
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+          EVENT_NAME: ${{ github.event_name }}
+          NOTIFY_INPUT: ${{ github.event.inputs.notify }}
+          TOP_INPUT: ${{ github.event.inputs.top_n }}
+        run: |
+          TOP_N="${TOP_INPUT:-30}"
+
+          NOTIFY_FLAG="--notify"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$NOTIFY_INPUT" = "false" ]; then
+            NOTIFY_FLAG=""
+          fi
+
+          echo "TOP_N=$TOP_N"
+          echo "NOTIFY_FLAG=$NOTIFY_FLAG"
+          echo "SENDKEY 是否存在: $([ -n "$SENDKEY" ] && echo '是' || echo '否')"
+
+          python live_stock_selector.py --merge --top "$TOP_N" $NOTIFY_FLAG --mtf-filter off
+      - name: Early inflection list (拐点名单 = 放量突破200日线 + 基本面领先指标)
+        # 主结果合并失败也照样尝试；拐点失败不影响整个 workflow
+        if: >
+          always() &&
+          (github.event_name == 'schedule' ||
+           github.event.inputs.run_inflection != 'false')
+        continue-on-error: true
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+          EVENT_NAME: ${{ github.event_name }}
+          NOTIFY_INPUT: ${{ github.event.inputs.notify }}
+          MINL_INPUT: ${{ github.event.inputs.inflection_min_leading }}
+        run: |
+          MINL="${MINL_INPUT:-2}"
+
+          NOTIFY_FLAG="--notify"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$NOTIFY_INPUT" = "false" ]; then
+            NOTIFY_FLAG=""
+          fi
+
+          echo "拐点名单：领先指标至少 $MINL 项，NOTIFY_FLAG=$NOTIFY_FLAG"
+          python live_stock_selector.py --merge --inflection-only --top 20 $NOTIFY_FLAG --inflection-min-leading "$MINL"
+      - name: Upload final selection
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-selection-result
+          path: |
+            live_select_*.csv
+            inflection_candidates_*.csv
+            mtf_resonate_universe.csv
+          if-no-files-found: warn
+          # 保留到 90 天（仓库允许的上限），方便之后用 signal_backtest.py 统计历史名单表现
+          retention-days: 90

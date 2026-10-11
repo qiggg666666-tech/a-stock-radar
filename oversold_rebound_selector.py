@@ -26,6 +26,9 @@
   python oversold_rebound_selector.py --fund-selftest 600519             # 诊断基本面接口是否可用
   python oversold_rebound_selector.py --shard all --inflection           # 同时记录全市场「放量突破200日线」候选
   python oversold_rebound_selector.py --merge --inflection-only --notify # 生成独立的早期拐点名单（含基本面）
+  python oversold_rebound_selector.py --shard all --roundbottom          # 同时记录全市场「圆弧底(ATR自适应)」候选
+  python oversold_rebound_selector.py --shard all --require rb --rb-level high   # 只留圆弧底(日周+年季)
+  python oversold_rebound_selector.py --merge --roundbottom-list-only --notify   # 只生成圆弧底名单
   python oversold_rebound_selector.py --shard 1 --inflection-scan        # 只做全市场「放量突破200日线」扫描（不跑超跌反弹打分）
   python oversold_rebound_selector.py --merge --top 20 --notify
 """
@@ -775,6 +778,265 @@ def run_inflection(
         print("Server酱:", notify_fn(f"早期拐点{today}|{len(out)}只", "\n\n".join(lines) + "\n\n仅为研究输出，不构成投资建议。"))
 
 
+# ====================== 圆弧底（ATR 自适应）======================
+# 融合自「圆弧底多周期选股 - ATR自适应版」，并修正了原脚本里互相矛盾的两处判断：
+#   1) 原来用“收盘距N日高点回撤>=53%”表示位置低，又要求收盘突破左沿——二者不可能同时成立；
+#      现改为：碗深 = (左沿高点 - 碗底最低) / 左沿高点 >= 阈值（碗要够深）。
+#   2) 原来要求“今日地量”又要求“今日放量”——二者不可能同时成立；
+#      现改为：地量发生在碗底附近，今日是放量突破日。
+# 参数随大盘/个股 ATR 分位自适应（高波动：回撤门槛放宽、放量倍数提高、观察期缩短）。
+# 级别：daily=日线形态；medium=日线+周线；high=日线+周线+(年线或季线)。
+RB_LEVELS = {"": 0, "daily": 1, "medium": 2, "high": 3}
+RB_BONUS = {"daily": 0.08, "medium": 0.12, "high": 0.20}
+RB_LABEL_CN = {"daily": "日线", "medium": "日周", "high": "日周+年季"}
+RB_CFG: dict[str, Any] = {"min_level": "medium"}   # 命中并加分/过滤所需的最低级别
+RB_MAX_EXTEND = 0.12                                # 收盘高出左沿不超过 12%（避免追已突破很远的）
+_RB_MARKET: dict[str, Any] | None = None
+
+
+def _rb_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    tr = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - df["close"].shift(1)).abs(),
+            (df["low"] - df["close"].shift(1)).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return tr.rolling(period).mean()
+
+
+def rb_market_state(force: bool = False) -> dict[str, Any]:
+    """沪深300 的 ATR 分位 → 基础参数档位（进程内缓存，只请求一次；失败按“正常”档）。"""
+    global _RB_MARKET
+    if _RB_MARKET is not None and not force:
+        return _RB_MARKET
+    normal = {"market_vol": "normal", "PULLBACK_MIN": 0.53, "VOL_EXPAND": 1.95, "DI_LIANG_RATIO": 0.55, "N": 100, "M": 20}
+    state = dict(normal)
+    try:
+        raw = ak.stock_zh_index_daily(symbol="sh000300")
+        d = raw.tail(150).copy()
+        atr = _rb_atr(d, 14)
+        pct = float((atr.iloc[-120:] < atr.iloc[-1]).mean())
+        if pct > 0.70:
+            state = {"market_vol": "high", "PULLBACK_MIN": 0.48, "VOL_EXPAND": 2.15, "DI_LIANG_RATIO": 0.60, "N": 90, "M": 18}
+        elif pct < 0.30:
+            state = {"market_vol": "low", "PULLBACK_MIN": 0.58, "VOL_EXPAND": 1.75, "DI_LIANG_RATIO": 0.48, "N": 115, "M": 22}
+    except Exception:
+        pass
+    _RB_MARKET = state
+    return state
+
+
+def rb_stock_params(df: pd.DataFrame, base: dict[str, Any]) -> dict[str, Any]:
+    """个股 ATR 分位微调：波动大 → 回撤门槛放宽、放量倍数提高、地量系数放宽、观察期缩短。"""
+    atr = _rb_atr(df, 14)
+    if len(atr.dropna()) < 80:
+        return dict(base, atr_percentile=None)
+    pct = float((atr.iloc[-120:] < atr.iloc[-1]).mean())
+    p = dict(base)
+    p["PULLBACK_MIN"] = float(np.clip(base["PULLBACK_MIN"] - (pct - 0.5) * 0.10, 0.42, 0.65))
+    p["VOL_EXPAND"] = float(np.clip(base["VOL_EXPAND"] + (pct - 0.5) * 0.70, 1.5, 2.8))
+    p["DI_LIANG_RATIO"] = float(np.clip(base["DI_LIANG_RATIO"] + (pct - 0.5) * 0.12, 0.40, 0.70))
+    p["N"] = int(np.clip(int(base["N"] - (pct - 0.5) * 25), 70, 130))
+    p["atr_percentile"] = round(pct, 3)
+    return p
+
+
+def calc_round_bottom(df: pd.DataFrame, market: dict[str, Any] | None = None) -> dict[str, Any]:
+    """
+    圆弧底（研究标注，不是买点承诺）。需要 >=160 根日线。
+    日线：碗够深 + 碗底位置合理 + 碗底地量 + 今日放量突破(左沿+0.25*ATR) + 无顶背离 + 右侧均线抬升。
+    周线：收盘>周MA20、周MA10>周MA30、本周量>5周均量*1.2。年/季线：收盘>MA250 或 收盘>MA60且MA60上行。
+    """
+    out: dict[str, Any] = {
+        "near_round_bottom": False,
+        "rb_level": "",
+        "rb_label": "",
+        "rb_bonus": 0.0,
+        "rb_depth": None,           # 碗深（左沿到碗底），小数
+        "rb_left_peak": None,
+        "rb_bowl_low": None,        # 碗底最低价（可作支撑）
+        "rb_breakout_price": None,  # 左沿 + 0.25*ATR
+        "rb_atr_pct": None,
+        "rb_market_vol": "",
+    }
+    try:
+        d = df.sort_values("date").reset_index(drop=True) if "date" in df.columns else df.reset_index(drop=True)
+        n = len(d)
+        if n < 160 or "volume" not in d.columns:
+            return out
+        mk = market or rb_market_state()
+        p = rb_stock_params(d, mk)
+        N, M = int(p["N"]), int(p["M"])
+        if n < N + M + 20:
+            return out
+        close = pd.to_numeric(d["close"], errors="coerce")
+        high = pd.to_numeric(d["high"], errors="coerce")
+        low = pd.to_numeric(d["low"], errors="coerce")
+        vol = pd.to_numeric(d["volume"], errors="coerce")
+        atr_v = float(_rb_atr(d, 14).iloc[-1])
+        c0, c1 = float(close.iloc[-1]), float(close.iloc[-2])
+        if not (np.isfinite(atr_v) and np.isfinite(c0) and c0 > 0):
+            return out
+        out["rb_atr_pct"] = p.get("atr_percentile")
+        out["rb_market_vol"] = mk.get("market_vol", "")
+
+        # ---- 左沿 / 碗底 / 碗深 ----
+        lo_i = n - (N + M)
+        seg = high.iloc[lo_i : n - M]
+        ip = lo_i + int(np.nanargmax(seg.values))
+        left_peak = float(high.iloc[ip])
+        ib = ip + int(np.nanargmin(low.iloc[ip:].values))
+        bowl_low = float(low.iloc[ib])
+        if left_peak <= 0:
+            return out
+        depth = (left_peak - bowl_low) / left_peak
+        span = max(n - 1 - ip, 1)
+        pos = (ib - ip) / span
+        out.update(rb_depth=round(depth, 4), rb_left_peak=round(left_peak, 2), rb_bowl_low=round(bowl_low, 2))
+        shape_ok = depth >= p["PULLBACK_MIN"] and 0.25 <= pos <= 0.85 and (n - 1 - ib) >= 5
+
+        # ---- 突破（左沿 + 0.25*ATR）----
+        breakout_price = left_peak + 0.25 * atr_v
+        out["rb_breakout_price"] = round(breakout_price, 2)
+        breakout = c0 > breakout_price and c0 > c1 and (c0 / left_peak - 1.0) <= RB_MAX_EXTEND
+
+        # ---- 碗底地量：碗底前后各约2日的均量 <= 地量系数 * 碗底之前约20日均量 ----
+        a, b = max(ib - 2, 0), min(ib + 3, n)
+        ref = vol.iloc[max(ib - 22, 0) : max(ib - 2, 1)].mean()
+        bottom_vol = vol.iloc[a:b].mean()
+        dry = bool(np.isfinite(ref) and ref > 0 and bottom_vol <= p["DI_LIANG_RATIO"] * ref)
+
+        # ---- 今日放量（对比前5日均量、昨日、近30日最大量）----
+        v0, v1 = float(vol.iloc[-1]), float(vol.iloc[-2])
+        prev5 = float(vol.iloc[-6:-1].mean())
+        vol_expand = bool(
+            prev5 > 0 and v1 > 0
+            and v0 >= 1.7 * prev5
+            and v0 >= p["VOL_EXPAND"] * v1
+            and v0 >= 0.90 * float(vol.iloc[-30:-1].max())
+        )
+        no_top_div = bool(v0 >= 0.82 * float(vol.iloc[-20:].max()))
+
+        ma5, ma10, ma20 = (close.rolling(k).mean().iloc[-1] for k in (5, 10, 20))
+        right_up = bool(c0 > ma20 and ma10 > ma20 and ma5 > ma10)
+
+        daily_ok = bool(shape_ok and breakout and dry and vol_expand and no_top_div and right_up)
+
+        # ---- 周线配合 ----
+        dd = d.copy()
+        dd["date"] = pd.to_datetime(dd["date"])
+        weekly = (
+            dd.set_index("date")
+            .resample("W-FRI")
+            .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+            .dropna()
+        )
+        weekly_ok = False
+        if len(weekly) >= 35:
+            wc, wv = weekly["close"], weekly["volume"]
+            weekly_ok = bool(
+                wc.iloc[-1] > wc.rolling(20).mean().iloc[-1]
+                and wc.rolling(10).mean().iloc[-1] > wc.rolling(30).mean().iloc[-1]
+                and wv.iloc[-1] > wv.rolling(5).mean().iloc[-1] * 1.2
+            )
+        # ---- 年线 / 季线 ----
+        ma250 = close.rolling(250).mean()
+        ma60 = close.rolling(60).mean()
+        yearly_ok = bool(np.isfinite(ma250.iloc[-1]) and c0 > ma250.iloc[-1])
+        quarterly_ok = bool(
+            np.isfinite(ma60.iloc[-1]) and np.isfinite(ma60.iloc[-11]) and c0 > ma60.iloc[-1] and ma60.iloc[-1] > ma60.iloc[-11]
+        )
+
+        level = ""
+        if daily_ok:
+            level = "daily"
+            if weekly_ok:
+                level = "high" if (yearly_ok or quarterly_ok) else "medium"
+        if level:
+            out["rb_level"] = level
+            out["rb_label"] = f"圆弧底·{RB_LABEL_CN[level]}"
+            if RB_LEVELS[level] >= RB_LEVELS.get(RB_CFG["min_level"], 2):
+                out["near_round_bottom"] = True
+                out["rb_bonus"] = RB_BONUS[level]
+    except Exception:
+        pass
+    return out
+
+
+def make_roundbottom_row(code: str, df: pd.DataFrame) -> dict[str, Any] | None:
+    """扫描阶段：不依赖筹码/超跌等任何硬过滤，命中圆弧底（达到最低级别）就记录。"""
+    rb = calc_round_bottom(df)
+    if not rb.get("near_round_bottom"):
+        return None
+    d = df.sort_values("date") if "date" in df.columns else df
+    return {
+        "code": str(code).zfill(6),
+        "date": str(pd.Timestamp(d["date"].iloc[-1]).date()) if "date" in d.columns else "",
+        "close": round(float(d["close"].iloc[-1]), 2),
+        "near_round_bottom": True,
+        **{k: rb.get(k) for k in (
+            "rb_level", "rb_label", "rb_depth", "rb_left_peak", "rb_bowl_low",
+            "rb_breakout_price", "rb_atr_pct", "rb_market_vol",
+        )},
+    }
+
+
+def _rb_tag(row: Any) -> str:
+    lab = str(row.get("rb_label") or "")
+    if not lab or lab == "nan":
+        return ""
+    bl, bp = row.get("rb_bowl_low"), row.get("rb_breakout_price")
+    extra = ""
+    if bl is not None and str(bl) not in ("", "nan", "None"):
+        extra = f"(碗底{bl}" + (f" 突破位{bp}" if bp is not None and str(bp) not in ("", "nan", "None") else "") + ")"
+    return f" | {lab}{extra}"
+
+
+def run_roundbottom(
+    cache_dir: Any, top_n: int, do_notify: bool, notify_fn: Any, fill_names_fn: Any
+) -> None:
+    """圆弧底名单（独立于主选股）：读取扫描阶段 --roundbottom 记录的全市场命中，按级别、碗深排序输出/推送。"""
+    files = sorted(Path(cache_dir).glob("roundbottom_shard_*.csv"))
+    if not files:
+        print("没有圆弧底分片结果：请先带 --roundbottom 重新运行 --shard（旧版本跑出的分片不含这份数据）")
+        return
+    _today = datetime.now().date()
+    _old = [f.name for f in files if datetime.fromtimestamp(f.stat().st_mtime).date() != _today]
+    if _old:
+        print(f"提示：以下圆弧底分片不是今天生成的（可能是旧数据）: {_old}")
+    df = pd.concat([pd.read_csv(f, dtype={"code": str}) for f in files], ignore_index=True)
+    df["code"] = df["code"].astype(str).str.zfill(6)
+    df = df.drop_duplicates("code", keep="last").reset_index(drop=True)
+    print(f"圆弧底候选（级别≥{RB_CFG['min_level']}）共 {len(df)} 只")
+    if df.empty:
+        return
+    df = fill_names_fn(df)
+    df["_lv"] = df["rb_level"].map(RB_LEVELS).fillna(0)
+    df["_dp"] = pd.to_numeric(df["rb_depth"], errors="coerce").fillna(0.0)
+    out = df.sort_values(["_lv", "_dp"], ascending=[False, False]).head(top_n).drop(columns=["_lv", "_dp"]).reset_index(drop=True)
+    today = datetime.now().strftime("%Y%m%d")
+    path = f"roundbottom_candidates_{today}.csv"
+    out.to_csv(path, index=False, encoding="utf-8-sig")
+    lines = []
+    print("\n" + "=" * 90)
+    print(f"圆弧底候选 Top{len(out)} → {path}")
+    print("=" * 90)
+    for i, r in out.iterrows():
+        dep = pd.to_numeric(r.get("rb_depth"), errors="coerce")
+        line = (
+            f"{i + 1:02d}. {r['code']} {r.get('name', '')} | {r.get('rb_label', '')} | 收盘{r['close']} "
+            f"| 碗深{dep * 100:.0f}% | 碗底{r.get('rb_bowl_low')} | 突破位{r.get('rb_breakout_price')} "
+            f"| 个股ATR分位{r.get('rb_atr_pct')} | 大盘波动:{r.get('rb_market_vol')}"
+        )
+        print(line)
+        lines.append(line)
+    print("说明：研究用名单，不是买点；碗底最低价可作为参考支撑。非投资建议。")
+    if do_notify:
+        print("Server酱:", notify_fn(f"圆弧底{today}|{len(out)}只", "\n\n".join(lines) + "\n\n仅为研究输出，不构成投资建议。"))
+
+
 def _fd_tag(row: Any) -> str:
     """200日线突破 / 基本面标签的展示文本。"""
     parts = []
@@ -929,7 +1191,7 @@ def calc_volume_bar(d: pd.DataFrame) -> dict[str, Any]:
     return out
 
 
-def _pass_require(sig_ma250: bool, sig_volbar: bool, sig_bk200: bool, require: str | None) -> bool:
+def _pass_require(sig_ma250: bool, sig_volbar: bool, sig_bk200: bool, sig_rb: bool, require: str | None) -> bool:
     if not require:
         return True
     if require == "ma250":
@@ -938,7 +1200,9 @@ def _pass_require(sig_ma250: bool, sig_volbar: bool, sig_bk200: bool, require: s
         return sig_volbar
     if require == "bk200":
         return sig_bk200
-    return sig_ma250 or sig_volbar or sig_bk200  # any
+    if require == "rb":
+        return sig_rb
+    return sig_ma250 or sig_volbar or sig_bk200 or sig_rb  # any
 
 
 def score_oversold_rebound(
@@ -1088,8 +1352,13 @@ def score_oversold_rebound(
     sig_bk = calc_ma200_breakout(d)
     if max_12m is not None and sig_bk.get("ret_12m") is not None and sig_bk["ret_12m"] > max_12m:
         return None  # 近12个月已大涨，不属于“早期”
+    sig_rb = calc_round_bottom(d)
     if not _pass_require(
-        bool(sig_ma["near_ma250_shadow"]), bool(sig_vb["near_volbar"]), bool(sig_bk["near_bk200"]), require
+        bool(sig_ma["near_ma250_shadow"]),
+        bool(sig_vb["near_volbar"]),
+        bool(sig_bk["near_bk200"]),
+        bool(sig_rb["near_round_bottom"]),
+        require,
     ):
         return None
 
@@ -1148,6 +1417,7 @@ def score_oversold_rebound(
         score += (PROFIT_MAX - profit) / 100.0
     score += cluster_bonus  # 【核心】EMA 聚类加减分
     score += float(sig_ma["ma250_bonus"]) + float(sig_vb["volbar_bonus"]) + float(sig_bk["bk200_bonus"])  # 年线长影线 / 倍量柱 / 200日线突破
+    score += float(sig_rb["rb_bonus"])  # 圆弧底(ATR自适应)
 
     # 【补全】RSI / MACD / 布林（TA-Lib 或 pandas）
     ta_label, ta_bonus = "", 0.0
@@ -1221,6 +1491,8 @@ def score_oversold_rebound(
         label += "·倍量柱"
     if sig_bk["near_bk200"]:
         label += "·放量突破200日线"
+    if sig_rb["near_round_bottom"]:
+        label += "·" + str(sig_rb["rb_label"])
 
     return {
         "code": str(code).zfill(6),
@@ -1282,6 +1554,16 @@ def score_oversold_rebound(
         "bk200_bonus": sig_bk["bk200_bonus"],
         "ma200": sig_bk["ma200"],
         "ret_12m": sig_bk["ret_12m"],
+        "near_round_bottom": bool(sig_rb["near_round_bottom"]),
+        "rb_level": sig_rb["rb_level"],
+        "rb_label": sig_rb["rb_label"],
+        "rb_bonus": sig_rb["rb_bonus"],
+        "rb_depth": sig_rb["rb_depth"],
+        "rb_left_peak": sig_rb["rb_left_peak"],
+        "rb_bowl_low": sig_rb["rb_bowl_low"],
+        "rb_breakout_price": sig_rb["rb_breakout_price"],
+        "rb_atr_pct": sig_rb["rb_atr_pct"],
+        "rb_market_vol": sig_rb["rb_market_vol"],
         "label": label,
         "score": round(float(score), 4),
     }
@@ -1294,6 +1576,7 @@ def run_shard(
     max_12m: float | None = None,
     inflection: bool = False,
     inflection_only: bool = False,
+    roundbottom: bool = False,
 ) -> None:
     print(f"\n{'=' * 60}")
     print(f"超跌反弹 分片 {shard_id} | {SHARD_MAP.get(shard_id)} | exclude_st={exclude_st} | require={require} | max_12m={max_12m}")
@@ -1307,6 +1590,10 @@ def run_shard(
     if infl_file.exists():
         infl_file.unlink()
     infl_rows: list[dict[str, Any]] = []
+    rb_file = CACHE_DIR / f"roundbottom_shard_{shard_id}.csv"
+    if rb_file.exists():
+        rb_file.unlink()
+    rb_rows: list[dict[str, Any]] = []
 
     codes = filter_shard(get_all_a_stocks(), shard_id)
     print(f"本分片 {len(codes)} 只")
@@ -1333,6 +1620,10 @@ def run_shard(
                 _ir = make_inflection_row(code, df, max_12m)
                 if _ir:
                     infl_rows.append(_ir)
+            if roundbottom:  # 同样独立于超跌/回撤等条件：全市场记录圆弧底
+                _rr = make_roundbottom_row(code, df)
+                if _rr:
+                    rb_rows.append(_rr)
             if inflection_only:
                 continue  # 拐点扫描：不跑超跌反弹打分
             row = score_oversold_rebound(df, code, require=require, max_12m=max_12m)
@@ -1354,6 +1645,10 @@ def run_shard(
         print(f"分片 {shard_id} 拐点候选(放量突破200日线): {len(infl_rows)} 只（有效样本 {n_data}）")
         if infl_rows:
             pd.DataFrame(infl_rows).to_csv(infl_file, index=False, encoding="utf-8-sig")
+    if roundbottom:
+        print(f"分片 {shard_id} 圆弧底候选(级别≥{RB_CFG['min_level']}): {len(rb_rows)} 只（有效样本 {n_data}）")
+        if rb_rows:
+            pd.DataFrame(rb_rows).to_csv(rb_file, index=False, encoding="utf-8-sig")
     if inflection_only:
         return
     if rows:
@@ -1436,7 +1731,7 @@ def _sig_tags(row: Any) -> str:
     vb_l = str(row.get("volbar_label") or "")
     if vb_l and vb_l != "nan":
         parts.append(f"{vb_l}(防守{row.get('vb_support', '-')})")
-    return ((" | " + " | ".join(parts)) if parts else "") + _fd_tag(row)
+    return ((" | " + " | ".join(parts)) if parts else "") + _fd_tag(row) + _rb_tag(row)
 
 
 def _fmt_profit(v: Any) -> str:
@@ -1490,7 +1785,7 @@ def merge_and_select(
     df = df.sort_values("score", ascending=False).drop_duplicates("code", keep="first")  # 先排序再去重，保留高分
     df = df.reset_index(drop=True)
     # CSV 读回后空字符串变 NaN，打印会出现 "nan"
-    for _c in ("name", "cluster_signal", "cluster_label", "ta_label", "label", "ma250_label", "volbar_label", "ma250_bar_date", "vb_date", "bk200_label", "fd_label", "fd_missing"):
+    for _c in ("name", "cluster_signal", "cluster_label", "ta_label", "label", "ma250_label", "volbar_label", "ma250_bar_date", "vb_date", "bk200_label", "rb_label", "rb_level", "fd_label", "fd_missing"):
         if _c in df.columns:
             df[_c] = df[_c].fillna("").astype(str).replace({"nan": "", "None": ""})
     if "name" in df.columns:
@@ -1503,7 +1798,11 @@ def merge_and_select(
         _m = _bool_col(df["near_ma250_shadow"])
         _v = _bool_col(df["near_volbar"])
         _b = _bool_col(df["near_bk200"]) if "near_bk200" in df.columns else pd.Series(False, index=df.index)
-        _keep = _m if require == "ma250" else _v if require == "volbar" else _b if require == "bk200" else (_m | _v | _b)
+        _r = _bool_col(df["near_round_bottom"]) if "near_round_bottom" in df.columns else pd.Series(False, index=df.index)
+        _keep = (
+            _m if require == "ma250" else _v if require == "volbar" else _b if require == "bk200"
+            else _r if require == "rb" else (_m | _v | _b | _r)
+        )
         df = df.loc[_keep].reset_index(drop=True)
         print(f"形态过滤 require={require}: {before} → {len(df)}")
     if fundamentals and not df.empty:
@@ -1532,6 +1831,8 @@ def merge_and_select(
         _anysig = _bool_col(df["near_ma250_shadow"]) | _bool_col(df["near_volbar"])
         if "near_bk200" in df.columns:
             _anysig = _anysig | _bool_col(df["near_bk200"])
+        if "near_round_bottom" in df.columns:
+            _anysig = _anysig | _bool_col(df["near_round_bottom"])
         _sig = df.loc[_anysig].head(top_n)
         if not _sig.empty:
             _sp = f"oversold_rebound_signal_{today}.csv"
@@ -1599,9 +1900,9 @@ def main() -> None:
     p.add_argument("--exclude-st", action="store_true", help="分片扫描时跳过 ST/*ST/退市整理股")
     p.add_argument(
         "--require",
-        choices=["ma250", "volbar", "bk200", "any"],
+        choices=["ma250", "volbar", "bk200", "rb", "any"],
         default=None,
-        help="形态硬过滤：ma250=年线长影线；volbar=倍量柱；bk200=底部放量突破200日线；any=三者其一（默认只标注加分）",
+        help="形态硬过滤：ma250=年线长影线；volbar=倍量柱；bk200=底部放量突破200日线；rb=圆弧底(ATR自适应)；any=四者其一（默认只标注加分）",
     )
     p.add_argument("--max-12m-return", type=float, default=None, help="排除近12个月涨幅超过该值的股票（2.0=200%%；默认不过滤）")
     p.add_argument("--fundamentals", action="store_true", help="merge 时对候选池加查基本面领先指标（较慢）")
@@ -1626,6 +1927,18 @@ def main() -> None:
         default=2,
         help="拐点名单：领先指标（含200日线突破）至少满足几项，默认2；原脚本为3",
     )
+    p.add_argument(
+        "--roundbottom",
+        action="store_true",
+        help="--shard 时：全市场记录「圆弧底(ATR自适应)」候选（不受超跌等条件限制）；--merge 时：在主结果之外再输出圆弧底名单",
+    )
+    p.add_argument("--roundbottom-list-only", action="store_true", help="--merge 时只生成圆弧底名单，不跑超跌反弹合并")
+    p.add_argument(
+        "--rb-level",
+        choices=["daily", "medium", "high"],
+        default="medium",
+        help="圆弧底最低级别：daily=日线；medium=日线+周线（默认）；high=日线+周线+年/季线",
+    )
     p.add_argument("--fund-workers", type=int, default=4, help="基本面查询并发线程数（默认4）")
     p.add_argument("--fund-budget", type=float, default=600.0, help="基本面查询总时间预算（秒，默认600；超时后其余记为未知）")
     p.add_argument("--fund-no-analyst", action="store_true", help="跳过“研报覆盖”指标（该接口按页翻全部研报，最慢）")
@@ -1634,6 +1947,7 @@ def main() -> None:
     FUND_CFG["workers"] = args.fund_workers
     FUND_CFG["budget"] = args.fund_budget
     FUND_CFG["analyst"] = not args.fund_no_analyst
+    RB_CFG["min_level"] = args.rb_level
 
     if args.fund_selftest:
         run_fund_selftest(args.fund_selftest)
@@ -1648,6 +1962,9 @@ def main() -> None:
             p.error("--shard 只能是 1-8 或 all")
 
     if args.merge:
+        if args.roundbottom_list_only:
+            run_roundbottom(CACHE_DIR, args.top, args.notify, notify_serverchan, _fill_names)
+            return
         if args.inflection_only:
             run_inflection(
                 CACHE_DIR, args.top, args.notify, notify_serverchan, _fill_names,
@@ -1665,6 +1982,8 @@ def main() -> None:
             cap_max=args.cap_max,
             min_leading=args.min_leading,
         )
+        if args.roundbottom:
+            run_roundbottom(CACHE_DIR, args.top, args.notify, notify_serverchan, _fill_names)
         if args.inflection:
             run_inflection(
                 CACHE_DIR, args.top, args.notify, notify_serverchan, _fill_names,
@@ -1677,12 +1996,12 @@ def main() -> None:
         report_uncovered(get_all_a_stocks())
         for i in range(1, 9):
             run_shard(i, exclude_st=args.exclude_st, require=args.require, max_12m=args.max_12m_return,
-                      inflection=args.inflection or args.inflection_scan, inflection_only=args.inflection_scan)
+                      inflection=args.inflection or args.inflection_scan, inflection_only=args.inflection_scan, roundbottom=args.roundbottom)
         _req = (f" --require {args.require}" if args.require else "") + (" --fundamentals" if args.fundamentals else "") + (" --inflection" if args.inflection else "")
         print(f"\n完成。执行: python oversold_rebound_selector.py --merge --top 20 --notify{_req}")
     else:
         run_shard(int(args.shard), exclude_st=args.exclude_st, require=args.require, max_12m=args.max_12m_return,
-                  inflection=args.inflection or args.inflection_scan, inflection_only=args.inflection_scan)
+                  inflection=args.inflection or args.inflection_scan, inflection_only=args.inflection_scan, roundbottom=args.roundbottom)
 
 
 if __name__ == "__main__":

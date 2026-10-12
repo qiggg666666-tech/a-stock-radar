@@ -15,6 +15,22 @@
   oversold_rebound_YYYYMMDD.csv      → 超跌反弹
   （live_select_layer_*.csv 是 wide+peak 的合并，已忽略避免重复计算）
 
+FINAL Chip 汇总输出（文件名固定、不带日期，信号日取记录里的 date 列）：
+  final_chip_round_bottom.csv        → FC圆弧底        final_chip_bk200.csv          → FC拐点
+  final_chip_long_shadow.csv         → FC长影线共振    final_chip_washout.csv        → FC洗盘
+  final_chip_first_red_confirmed.csv → FC首红确认      final_chip_red_heavy_wide_zone.csv → FC红筹∩宽幅
+  final_chip_low_outside.csv         → FC破低反包      final_chip_deep_strong.csv    → FC深跌巨量
+  final_chip_ma_strong.csv           → FC均线强多
+  （带 _all 后缀的全量文件不读取。这些文件每次运行都会被覆盖，需要把每天的 artifact 下载/归档到一个目录，
+    用 --dir 指向它；同一来源、同一天、同一股票会自动去重。）
+  --sources 可只统计部分来源：--sources fc（FINAL Chip 全部）、--sources live（实战选股+超跌）、
+  或具体名称，如 --sources FC圆弧底,超跌反弹
+
+目标价/支撑检验（名单里带压力位 tp_* 字段时自动统计）：
+  触目标%  信号后 N 日内最高价 >= 目标区下沿(tp_primary_lo) 的比例
+  破支撑%  信号后 N 日内最低价 <= 参考支撑的比例；参考支撑取 rb_bowl_low(圆弧底碗底) → zone_day_low(影线低点)
+           → wo_support/vb_support(倍量柱防守位)，名单里没有这些字段的来源不统计
+
 重要前提：
   1) 这些 CSV 每天生成后必须保留下来（GitHub Actions 里请 commit 或上传 artifact），
      否则历史丢失，没有可统计的样本。
@@ -60,8 +76,27 @@ SOURCES = [
     ("live_select_limitup_", "冲板结构"),
     ("oversold_rebound_", "超跌反弹"),
 ]
+# FINAL Chip 汇总输出：文件名固定（精确匹配，避免把 *_all.csv 一起读进来）
+FINAL_CHIP_SOURCES = [
+    ("final_chip_round_bottom.csv", "FC圆弧底"),
+    ("final_chip_bk200.csv", "FC拐点"),
+    ("final_chip_long_shadow.csv", "FC长影线共振"),
+    ("final_chip_washout.csv", "FC洗盘"),
+    ("final_chip_first_red_confirmed.csv", "FC首红确认"),
+    ("final_chip_red_heavy_wide_zone.csv", "FC红筹∩宽幅"),
+    ("final_chip_low_outside.csv", "FC破低反包"),
+    ("final_chip_deep_strong.csv", "FC深跌巨量"),
+    ("final_chip_ma_strong.csv", "FC均线强多"),
+]
+ALL_SOURCES = [(f"{p}*.csv", label) for p, label in SOURCES] + FINAL_CHIP_SOURCES
 DATE_RE = re.compile(r"(\d{8})\.csv$")
 SCORE_COL = {
+    "FC圆弧底": "zone_score",
+    "FC长影线共振": "zone_score",
+    "FC洗盘": "washout_score",
+    "FC红筹∩宽幅": "wide_score",
+    "FC均线强多": "ma_score",
+    "FC首红确认": "intraday_ma5_slope",
     "宽幅启动": "score_wide",
     "红筹尖峰": "score_peak",
     "冲板结构": "limitup_score",
@@ -83,6 +118,10 @@ DEFAULT_GROUPS = [
     "volbar_label",
     "bk200_label",
     "rb_label",
+    "rb_level",
+    "rb_market_vol",
+    "main_fund_ok",
+    "tp_primary_score",
     "fd_label",
     "ta_label",
     "label",
@@ -94,8 +133,24 @@ LIMIT_TOL = 0.005  # 涨停判断容差（前复权价格有舍入误差）
 # --------------------------------------------------------------------------- #
 # 读取历史名单
 # --------------------------------------------------------------------------- #
+def _select_sources(spec: str) -> list[tuple[str, str]]:
+    """--sources：空=全部；fc=FINAL Chip 全部；live=实战选股+超跌；否则按名称（逗号分隔，子串匹配）。"""
+    spec = (spec or "").strip()
+    if not spec or spec.lower() == "all":
+        return ALL_SOURCES
+    items = [x.strip() for x in spec.split(",") if x.strip()]
+    out: list[tuple[str, str]] = []
+    for pat, label in ALL_SOURCES:
+        is_fc = label.startswith("FC")
+        for it in items:
+            if (it.lower() == "fc" and is_fc) or (it.lower() == "live" and not is_fc) or it in label:
+                out.append((pat, label))
+                break
+    return out
+
+
 def load_signals(
-    dirs: list[str], since: str | None, until: str | None
+    dirs: list[str], since: str | None, until: str | None, sources: str = ""
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     seen: set[Path] = set()
@@ -104,8 +159,8 @@ def load_signals(
         if not base.exists():
             print(f"目录不存在，跳过: {base}")
             continue
-        for prefix, label in SOURCES:
-            for f in sorted(base.rglob(f"{prefix}*.csv")):
+        for pattern, label in _select_sources(sources):
+            for f in sorted(base.rglob(pattern)):
                 rp = f.resolve()
                 if rp in seen:
                     continue
@@ -239,9 +294,13 @@ def forward_stats(
     entry_mode: str,
     limit: float,
     double_days: int = 0,
+    tp_lo: float | None = None,
+    sup: float | None = None,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {"entry_px": np.nan, "buyable": np.nan, "open_pct": np.nan}
     for h in horizons:
+        out[f"tp_hit_{h}"] = np.nan
+        out[f"sup_break_{h}"] = np.nan
         out[f"ret_{h}"] = np.nan
         out[f"maxup_{h}"] = np.nan
         out[f"maxdd_{h}"] = np.nan
@@ -296,6 +355,11 @@ def forward_stats(
             pct = c[ks] / prev - 1
         hit = (pct >= limit - LIMIT_TOL) & (c[ks] >= hi[ks] * 0.998)
         out[f"lu_{h}"] = float(bool(hit.any()))
+        # 目标区下沿是否触及 / 参考支撑是否被跌破（信号日之后的 h 个交易日内）
+        if tp_lo is not None and np.isfinite(tp_lo) and tp_lo > 0:
+            out[f"tp_hit_{h}"] = float(hi[i0 + 1 : j + 1].max() >= tp_lo)
+        if sup is not None and np.isfinite(sup) and sup > 0:
+            out[f"sup_break_{h}"] = float(lo[i0 + 1 : j + 1].min() <= sup)
 
     if double_days > 0 and i0 + double_days < n:
         out["double"] = float(c[i0 + 1 : i0 + double_days + 1].max() / entry >= 2.0)
@@ -324,6 +388,8 @@ def _stat_row(g: pd.DataFrame, h: int) -> dict[str, Any] | None:
         "最差%": round(float(r.min() * 100), 2),
         "最好%": round(float(r.max() * 100), 2),
         "涨停率%": round(float(lu.mean() * 100), 1) if len(lu) else np.nan,
+        "触目标%": round(float(g[f"tp_hit_{h}"].dropna().mean() * 100), 1) if g[f"tp_hit_{h}"].notna().any() else np.nan,
+        "破支撑%": round(float(g[f"sup_break_{h}"].dropna().mean() * 100), 1) if g[f"sup_break_{h}"].notna().any() else np.nan,
     }
 
 
@@ -351,7 +417,7 @@ def print_table(title: str, tbl: pd.DataFrame) -> None:
     if tbl.empty:
         print("（样本不足）")
     else:
-        print(tbl.to_string(index=False))
+        print(tbl.dropna(axis=1, how="all").to_string(index=False))  # 没有目标/支撑数据的列不显示
 
 
 # --------------------------------------------------------------------------- #
@@ -363,7 +429,7 @@ def run(args: argparse.Namespace) -> None:
     if focus != args.focus:
         print(f"--focus {args.focus} 不在 horizons 中，改用 {focus}")
 
-    sig = load_signals(args.dir, args.since, args.until)
+    sig = load_signals(args.dir, args.since, args.until, getattr(args, "sources", ""))
     if sig.empty:
         print("没有找到任何历史名单 CSV。请确认已保留每天的输出文件，并用 --dir 指向存放目录。")
         return
@@ -394,12 +460,24 @@ def run(args: argparse.Namespace) -> None:
         code = rd["code"]
         name = rd.get("name", "") if isinstance(rd.get("name", ""), str) else ""
         lim = limit_pct(code, name, args.st_limit)
+        def _px(*cols: str) -> float | None:
+            for c in cols:
+                v = pd.to_numeric(rd.get(c), errors="coerce")
+                if pd.notna(v) and float(v) > 0:
+                    return float(v)
+            return None
+
+        tp_lo = _px("tp_primary_lo")
+        sup = _px("rb_bowl_low", "zone_day_low", "wo_support", "vb_support")
         st = forward_stats(
-            price_cache.get(code), rd["signal_date"], horizons, args.entry, lim, args.double_days
+            price_cache.get(code), rd["signal_date"], horizons, args.entry, lim, args.double_days,
+            tp_lo=tp_lo, sup=sup,
         )
         bs = forward_stats(bench, rd["signal_date"], horizons, args.entry, 9.0) if not bench.empty else {}
         row = dict(rd)
         row.update(st)
+        row["tp_price"] = tp_lo
+        row["sup_price"] = sup
         for h in horizons:
             b = bs.get(f"ret_{h}", np.nan) if bs else np.nan
             row[f"bench_{h}"] = b
@@ -493,6 +571,10 @@ def main() -> None:
     p.add_argument("--horizons", default="1,3,5,10,20", help="持有交易日，逗号分隔")
     p.add_argument("--focus", type=int, default=5, help="分组统计使用的持有日")
     p.add_argument("--entry", choices=["open", "close"], default="open", help="买入价：次日开盘/信号日收盘")
+    p.add_argument(
+        "--sources", default="",
+        help="只统计部分来源：空=全部；fc=FINAL Chip 全部；live=实战选股+超跌；或名称(逗号分隔)，如 FC圆弧底,超跌反弹",
+    )
     p.add_argument("--group-by", default=",".join(DEFAULT_GROUPS), help="分组列，逗号分隔")
     p.add_argument("--min-n", type=int, default=5, help="分组最少样本数")
     p.add_argument("--since", default="", help="起始信号日 YYYYMMDD")

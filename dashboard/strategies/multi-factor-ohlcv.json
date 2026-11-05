@@ -5,8 +5,8 @@
     "label": "Q01多因子",
     "score_label": "研究总评分"
   },
-  "run_date": "2026-11-05",
-  "generated_at": "2026-11-04T20:27:30+00:00",
+  "run_date": "2026-11-06",
+  "generated_at": "2026-11-05T19:54:07+00:00",
   "status": "ready",
   "candidate_count": 0,
   "shards": [
@@ -24,8 +24,8 @@
   "read_errors": [],
   "candidates": [],
   "data_provenance": {
-    "state": "cache",
-    "source": "cache",
+    "state": "live",
+    "source": "akshare",
     "detail": "共同股票池与A-D同日分片产物汇总。"
   },
   "parameter_fingerprint": "43885837080082b9",
@@ -45,8 +45,8 @@
     "live_only": true,
     "include_sector_labels": false
   },
-  "processed": 5029,
-  "errors": 42,
+  "processed": 5028,
+  "errors": 41,
   "disclaimer": "Q01为日线OHLCV研究筛选，板块为运行时元数据；不构成投资建议。",
   "notification_parts": 1,
   "notification_candidate_count": 0,

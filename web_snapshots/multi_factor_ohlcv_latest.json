@@ -5,8 +5,8 @@
     "label": "Q01多因子",
     "score_label": "研究总评分"
   },
-  "run_date": "2026-11-10",
-  "generated_at": "2026-11-09T23:09:58+00:00",
+  "run_date": "2026-11-11",
+  "generated_at": "2026-11-10T20:15:19+00:00",
   "status": "ready",
   "candidate_count": 0,
   "shards": [
@@ -24,8 +24,8 @@
   "read_errors": [],
   "candidates": [],
   "data_provenance": {
-    "state": "live",
-    "source": "akshare",
+    "state": "cache",
+    "source": "cache",
     "detail": "共同股票池与A-D同日分片产物汇总。"
   },
   "parameter_fingerprint": "43885837080082b9",

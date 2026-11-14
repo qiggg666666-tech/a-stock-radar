@@ -1,0 +1,117 @@
+name: Strong Stock Screener
+
+# 盘中强势股快照筛选（创业板 + 涨幅 + 量比 + 成交额），结果推送 Server酱并保存 CSV。
+# 手动触发已验证（东方财富轻量接口在 Actions 上可用）。现在加了定时：交易日北京时间 10:30 和 14:05。
+# 定时任务带 --only-in-session：不在交易时段、或行情数据日期不是今天（休市日）时自动跳过且不推送；
+# 定时触发时“没有命中”默认不推送（手动触发才推“0只”）。手动触发永远不受交易时段限制。
+# GitHub 的 cron 用 UTC（北京时间减 8 小时），并且可能延迟几分钟到十几分钟；所以避开整点，
+# 且脚本的交易时段判断给了余量（9:30–11:30、13:00–15:00）。想停用定时：删掉下面 schedule 两行，或在仓库 Actions 里 Disable workflow。
+# 想改时间：北京 9:45 → "45 1 * * 1-5"；北京 11:00 → "0 3 * * 1-5"；北京 14:30 → "30 6 * * 1-5"。
+
+on:
+  schedule:
+    - cron: "30 2 * * 1-5"    # 北京时间 10:30（周一至周五）
+    - cron: "5 6 * * 1-5"     # 北京时间 14:05（周一至周五）
+  workflow_dispatch:
+    inputs:
+      min_pct:
+        description: "最低涨幅（百分数，10 即 10%）"
+        type: string
+        default: "10"
+      min_volume_ratio:
+        description: "最低量比（仅东方财富源有量比）"
+        type: string
+        default: "2.5"
+      min_amount_yi:
+        description: "最低成交额（亿元，0.5 即 5000 万）"
+        type: string
+        default: "0.5"
+      boards:
+        description: "板块：cyb=创业板 / cyb_kcb=创业板+科创板 / all=全部"
+        type: choice
+        options: ["cyb", "cyb_kcb", "all"]
+        default: "cyb"
+      top:
+        description: "最多输出多少只"
+        type: string
+        default: "30"
+      notify:
+        description: "是否推送 Server酱"
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+      notify_empty:
+        description: "没有命中时是否也推送一条“0只”"
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+      probe:
+        description: "只探测各数据源是否可用（不筛选），结果推送出来；第一次验证建议选 true"
+        type: choice
+        options: ["false", "true"]
+        default: "false"
+      try_full_akshare:
+        description: "轻量源都失败后，再尝试 akshare 全市场接口（慢，Actions 上常超时）"
+        type: choice
+        options: ["false", "true"]
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        env:
+          TRY_FULL: ${{ inputs.try_full_akshare || 'false' }}
+        run: |
+          python -m pip install --disable-pip-version-check pandas requests
+          # akshare 依赖很多，只有勾选“全市场接口”时才安装
+          if [ "$TRY_FULL" = "true" ]; then python -m pip install --disable-pip-version-check akshare; fi
+
+      - name: Screen strong stocks
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+          MIN_PCT: ${{ inputs.min_pct || '10' }}
+          MIN_VR: ${{ inputs.min_volume_ratio || '2.5' }}
+          MIN_AMOUNT_YI: ${{ inputs.min_amount_yi || '0.5' }}
+          BOARDS: ${{ inputs.boards || 'cyb' }}
+          TOP_N: ${{ inputs.top || '30' }}
+          NOTIFY: ${{ inputs.notify || 'true' }}
+          NOTIFY_EMPTY: ${{ inputs.notify_empty || 'false' }}
+          PROBE: ${{ inputs.probe || 'false' }}
+          EVENT: ${{ github.event_name }}
+          TRY_FULL: ${{ inputs.try_full_akshare || 'false' }}
+        run: |
+          EXTRA=""
+          if [ "$NOTIFY" = "true" ]; then EXTRA="$EXTRA --notify"; fi
+          if [ "$NOTIFY_EMPTY" = "false" ]; then EXTRA="$EXTRA --no-notify-empty"; fi
+          if [ "$PROBE" = "true" ]; then EXTRA="$EXTRA --probe"; fi
+          if [ "$TRY_FULL" = "true" ]; then EXTRA="$EXTRA --try-full-akshare"; fi
+          if [ "$EVENT" = "schedule" ]; then EXTRA="$EXTRA --only-in-session"; fi
+          python strong_stock_screener.py \
+            --min-pct "$MIN_PCT" \
+            --min-volume-ratio "$MIN_VR" \
+            --min-amount-yi "$MIN_AMOUNT_YI" \
+            --boards "$BOARDS" \
+            --top "$TOP_N" \
+            --out-dir out \
+            $EXTRA
+
+      - name: Upload result CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strong-stocks
+          path: out/strong_stocks_*.csv
+          if-no-files-found: ignore
+          retention-days: 30

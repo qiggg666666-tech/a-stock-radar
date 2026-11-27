@@ -1,0 +1,116 @@
+name: predict-today-scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "非交易日也强制运行(测试用)"
+        type: boolean
+        default: true
+      min_score:
+        description: "个股最低得分"
+        default: "6"
+  schedule:
+    - cron: "30 0 * * 1-5"   # 北京时间 08:30 盘前
+    - cron: "28 1 * * 1-5"   # 北京时间 09:28 竞价后
+
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Shanghai
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      trade: ${{ steps.prep.outputs.trade }}
+      total: ${{ steps.prep.outputs.total }}
+      shards: ${{ steps.prep.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install akshare pandas numpy requests
+      - name: Prepare (板块 + 候选池 + 快照)
+        id: prep
+        run: python predict_today_scan.py
+        env:
+          MODE: prepare
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && '1' || '0' }}
+      - uses: actions/upload-artifact@v4
+        if: steps.prep.outputs.trade == 'true'
+        with:
+          name: prep
+          path: prep/
+          retention-days: 3
+
+  analyze:
+    needs: prepare
+    if: needs.prepare.outputs.trade == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install akshare pandas numpy requests
+      - uses: actions/download-artifact@v4
+        with:
+          name: prep
+          path: prep
+      - name: Analyze shard
+        run: python predict_today_scan.py
+        env:
+          MODE: analyze
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ needs.prepare.outputs.total }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.shard }}
+          path: results/
+          retention-days: 3
+
+  merge:
+    needs: [prepare, analyze]
+    if: ${{ always() && needs.prepare.outputs.trade == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install akshare pandas numpy requests
+      - uses: actions/download-artifact@v4
+        with:
+          name: prep
+          path: prep
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: results
+          merge-multiple: true
+      - name: Merge and push
+        run: python predict_today_scan.py
+        env:
+          MODE: merge
+          SHARD_TOTAL: ${{ needs.prepare.outputs.total }}
+          MIN_SCORE: ${{ inputs.min_score || '6' }}
+          SENDKEY: ${{ secrets.SENDKEY }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: final
+          path: output/
+          retention-days: 14
